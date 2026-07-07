@@ -3,20 +3,80 @@
 ## What this is
 
 A small, addon-agnostic UI widget library for 1.12 WoW addons. It currently
-houses one widget, `NewListEditor`: a bordered `FauxScrollFrame`-backed row
-pool with an optional leading tristate/checkbox control, a colour-able name
-label, optional trailing per-column widgets, reorder (arrows + full
-drag-to-reorder with a ghost row, insertion indicator and cursor-edge
-auto-scroll), and an optional add row. Further widgets are expected to join it
-under the same library name over time.
+houses five widgets:
 
-`NewListEditor` has no knowledge of any particular addon's data model — every
-list-specific behavior (the backing array, how to reorder/remove an entry,
-how to paint the name/leading control/any trailing columns, even the absolute
-path to its own textures) comes through the `spec` table passed to
-`LibWidgets.NewListEditor(parent, spec)`, and it holds no addon-specific state
-of its own. See the header comment in [LibWidgets.lua](LibWidgets.lua) for the
-full `spec` field list.
+- `NewButton` — a flat, tooltip-backdrop-styled action button (text label,
+  press-nudge feedback).
+- `NewTextBox` — a single-line edit box with the same tooltip-style backdrop
+  (not `InputBoxTemplate` — its border renders a black bar at small heights),
+  committing on Enter.
+- `NewSlider` — an `OptionsSliderTemplate` slider whose title carries the live
+  value instead of the template's Low/High end labels, with a `.setValue(v)`
+  method that resyncs the widget from external state without echoing back
+  through `onChange`.
+- `NewDropButton` — a button showing the current value that drops a popup list
+  of options to change it (no cycling), for small fixed or dynamic value sets
+  (an anchor point, a mode, a profile name).
+- `NewListEditor` — a bordered `FauxScrollFrame`-backed row pool with an
+  optional leading tristate/checkbox control, a colour-able name label,
+  optional trailing per-column widgets, reorder (arrows + full
+  drag-to-reorder with a ghost row, insertion indicator and cursor-edge
+  auto-scroll), and an optional add row built from `NewButton` + `NewTextBox`
+  (so the add row shares the same flat-button/edit-box look as everything
+  else instead of a separately hand-rolled pair).
+
+Further widgets are expected to join it under the same library name over time.
+
+None of the five have any knowledge of a particular addon's data model —
+every caller-specific behavior (what a button does, a slider's range/label,
+a text box's commit, a drop button's values, a list editor's backing
+array/reorder/paint) comes through the `spec` table (or plain args, for the
+simpler widgets) passed to each `LibWidgets.New*(parent, spec)` call, and the
+widgets hold no addon-specific state of their own. `NewButton`/`NewTextBox`/
+`NewSlider`/`NewDropButton` reuse the list editor's own flat-button/backdrop
+styling (`styleFlatButton`, `WIDGET_BACKDROP`) so every widget in the library
+reads as one visual system, and the more composite widgets (`NewListEditor`'s
+add row) are themselves built from the simpler ones rather than duplicating
+their construction. See the header comment in [LibWidgets.lua](LibWidgets.lua)
+for the full `spec` field list of each.
+
+## Closing a `NewDropButton` popup
+
+At most one `NewDropButton` popup is open at a time, tracked by a single
+private `activeMenu` upvalue and closed through the public
+`LibWidgets.CloseAllMenus()`.
+
+1.12 gives a plain `Button`/`Slider`/`CheckButton` no generic focus-lost
+event — only `EditBox` has `OnEditFocusGained`/`OnEditFocusLost` — so there is
+no reliable way to detect "some other control just gained focus" by
+listening from the outside. The alternative most addons reach for is a
+screen-covering invisible "click-catcher" frame raised above everything
+while a menu is open, closing it on any `OnMouseDown` that lands outside the
+menu. That works for "click on blank space", but it actively hurts the
+"switch directly to a different drop button" case: the catcher, being above
+everything so it can catch a background click, also swallows the click meant
+for the *next* drop button, so opening it needs a second click (close, then
+open) instead of one.
+
+This library takes the opposite approach: no passive catcher at all. Instead
+every interactive widget it builds — `NewButton`'s `OnMouseDown`,
+`NewSlider`'s `OnValueChanged`, `NewTextBox`'s `OnEditFocusGained`,
+`NewDropButton`'s own item clicks and toggle, and the list editor's
+reorder/delete/leading-control buttons and drag-start — calls
+`CloseAllMenus()` as the first thing it does. Touching *anything* else in
+the library closes a still-open menu immediately, and clicking a different
+`NewDropButton` opens it in one click (its own `OnClick` closes the old menu
+and opens its own in the same handler, no catcher in the way).
+
+The one gap this leaves is a click that lands on nothing interactive at all
+— bare panel background, or somewhere outside the addon's own frames
+entirely. A consuming addon can close that gap for its own panel by wiring
+`OnMouseDown` (blank-area clicks) and `OnHide` to `LibWidgets.CloseAllMenus()`
+too; FearWardHelper's config panel does both (`FearWardHelper.lua`'s
+`buildConfig`). The `OnHide` half matters for correctness, not just polish:
+hiding a parent frame only suppresses a child's *visibility*, not its own
+`Shown` flag, so a menu left open when its host panel closes would otherwise
+pop back up still expanded the next time the panel reopens.
 
 ## Comment style
 

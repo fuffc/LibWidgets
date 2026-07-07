@@ -1,10 +1,13 @@
 -- LibWidgets -- a small, addon-agnostic UI widget library for 1.12 WoW
--- addons. Currently houses one widget, NewListEditor: a bordered
--- FauxScrollFrame-backed row pool with an optional leading tristate/checkbox
--- control, a class/priority-coloured name label, optional trailing
--- per-column widgets, reorder (arrows + full drag-to-reorder with a ghost
--- row, insertion indicator and cursor-edge auto-scroll) and an optional add
--- row. Further widgets are expected to join it under the same library name.
+-- addons. Currently houses five widgets: NewButton (a flat action button),
+-- NewSlider (a value-carrying OptionsSliderTemplate slider), NewTextBox (a
+-- tooltip-backdrop-styled edit box), NewDropButton (a value-picker popup
+-- button) and NewListEditor (a bordered FauxScrollFrame-backed row pool with
+-- an optional leading tristate/checkbox control, a class/priority-coloured
+-- name label, optional trailing per-column widgets, reorder -- arrows + full
+-- drag-to-reorder with a ghost row, insertion indicator and cursor-edge
+-- auto-scroll -- and an optional add row built from NewButton + NewTextBox).
+-- Further widgets are expected to join it under the same library name.
 --
 -- Every caller-specific bit of NewListEditor -- the backing list, how to
 -- reorder/remove an entry, how to paint the name/leading control/any
@@ -30,6 +33,60 @@
 -- whole folder, which would also capture files that don't belong in a
 -- shipped addon (such as version-control metadata now that this folder is a
 -- git submodule).
+--
+-- NewButton(parent, spec) -- a flat, tooltip-backdrop-styled action button (the
+-- same look as the list editor's reorder/delete/leading-control buttons). spec:
+--   text, width, height (default 22), onClick
+-- Returns the button with a `.label` FontString and a `.setText(text)` method for
+-- relabeling later (e.g. a button whose face shows a live value).
+--
+-- NewTextBox(parent, spec) -- a single-line edit box with a tooltip-style backdrop
+-- (not InputBoxTemplate -- that template's border textures render a black bar at
+-- small heights). spec:
+--   width (omit to size purely from the caller's own anchors, e.g. a box anchored
+--   on both TOPLEFT and RIGHT), height (default 22), text (initial contents)
+--   onCommit(text) -- called on Enter (the box then clears focus); Escape clears
+--                     focus with no commit. Omit for a read-only display box.
+--
+-- NewSlider(parent, spec) -- a horizontal OptionsSliderTemplate slider whose title
+-- carries the live value instead of the template's Low/High end labels. spec:
+--   name          -- unique global frame name (the template needs one to address
+--                    "<name>Low"/"<name>High"/"<name>Text")
+--   min, max, step, width (default 150)
+--   onChange(v)   -- called on every user drag
+--   format(v)     -- optional: -> the full title text (defaults to just the number)
+--   get()         -- optional: seeds the initial value through the same guard
+--                    `.setValue` uses, so seeding never echoes through onChange
+-- Returns the slider with a `.setValue(v)` method: sets the value and repaints the
+-- title without firing onChange, for resyncing the widget from external state.
+--
+-- NewDropButton(parent, spec) -- a button showing the current value that drops a
+-- popup list of options to change it (no cycling). spec:
+--   width, height (button size; height defaults to 20)
+--   menuWidth (defaults to width), itemHeight (defaults to 14)
+--   values        -- ordered array of stored values (menu order), or a function
+--                    returning one: the menu rebuilds on every open (dynamic sets,
+--                    e.g. profile names)
+--   labels        -- value -> display label; optional (defaults to the raw value)
+--   tips          -- value -> tooltip line; optional
+--   onSelect(v)   -- called when a menu entry is picked
+--   get()         -- optional: when given, the button self-paints from it on build
+--                    and after each pick via `.setValue`. Omit it for a caller that
+--                    repaints recycled instances itself each draw (`.setValue(v)`
+--                    works either way).
+--   menuParent, menuStrata -- override the popup's parent/strata; it defaults to
+--                    the button itself at "DIALOG", which is enough unless the
+--                    button lives inside a ScrollFrame that would clip it.
+-- The live value is stashed on `.value` for the button's own hover tooltip. At
+-- most one NewDropButton popup is ever open at once -- see CloseAllMenus below.
+--
+-- CloseAllMenus() -- hides whichever NewDropButton popup is currently open, if
+-- any. Every widget this library builds calls it on interaction (see the
+-- comment above its definition for why -- there is no generic focus-lost event
+-- to hook instead), so a menu closes the moment anything else in the library
+-- is touched. A consuming addon's own panel can call it too (e.g. on
+-- OnMouseDown for a blank-area click, or OnHide so a menu left open under a
+-- closed panel doesn't pop back up still expanded next time it opens).
 --
 -- NewListEditor(parent, spec) -- spec fields:
 --   nameFrame     -- unique string naming the internal ScrollFrame (1.12's
@@ -67,7 +124,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 1
+local MAJOR, MINOR = "LibWidgets-1.0", 4
 LibWidgets = LibStub:NewLibrary(MAJOR, MINOR)
 if not LibWidgets then return end
 
@@ -87,6 +144,26 @@ local ICON_DELETE = "Interface\\Buttons\\UI-GroupLoot-Pass-Up"
 
 local MOVE_OK   = { 0.2, 0.9, 0.2 }
 local MOVE_NONE = { 0.5, 0.5, 0.5 }
+
+-- Only one NewDropButton popup is ever open at a time. 1.12 has no generic
+-- focus-lost event for a plain Button/Slider/CheckButton (only EditBox has
+-- OnEditFocusGained/Lost), so there is no reliable way to detect "some other
+-- control just gained focus" from the outside. Instead every interactive
+-- widget this library builds calls CloseAllMenus() as the first thing it
+-- does on interaction (a click, a drag-start, an edit box gaining focus), so
+-- touching *anything* else in the library always closes a still-open menu --
+-- this is an explicit, not passive, close rather than a screen-covering
+-- click-catcher, so it never costs the "click a different drop button"
+-- case an extra click the way a catcher would. The one gap this doesn't
+-- cover is a click that lands on nothing interactive at all (bare panel
+-- background, or outside the addon's own frames entirely); a consuming
+-- addon can close that gap too by wiring its own panel's OnMouseDown to
+-- LibWidgets.CloseAllMenus().
+local activeMenu = nil
+function LibWidgets.CloseAllMenus()
+	if activeMenu then activeMenu:Hide() end
+	activeMenu = nil
+end
 
 -- Flat, tooltip-backdrop-styled button base shared by the reorder/delete/
 -- leading-control buttons.
@@ -113,7 +190,7 @@ local function iconButton(parent, icon, onClick)
 	b:SetScript("OnLeave", function() this:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8) end)
 	b:SetScript("OnMouseDown", function() this.icon:SetPoint("CENTER", 1, -1) end)
 	b:SetScript("OnMouseUp", function() this.icon:SetPoint("CENTER", 0, 0) end)
-	b:SetScript("OnClick", onClick)
+	b:SetScript("OnClick", function() LibWidgets.CloseAllMenus(); onClick() end)
 	return b
 end
 
@@ -129,7 +206,10 @@ local function buildTristate(row, lc, iconPath)
 	sw:SetWidth(12); sw:SetHeight(12)
 	sw:SetPoint("CENTER", 0, 0)
 	sw:SetTexture(iconPath("circle"))
-	b:SetScript("OnClick", function() if row.entry ~= nil then lc.cycle(row.entry) end end)
+	b:SetScript("OnClick", function()
+		LibWidgets.CloseAllMenus()
+		if row.entry ~= nil then lc.cycle(row.entry) end
+	end)
 	b:SetScript("OnEnter", function()
 		this:SetBackdropBorderColor(0.9, 0.8, 0.2, 1)
 		if b.tip then
@@ -158,9 +238,183 @@ local function buildCheckbox(row, lc)
 	local b = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
 	b:SetWidth(STATE_W); b:SetHeight(18)
 	b:SetScript("OnClick", function()
+		LibWidgets.CloseAllMenus()
 		if row.entry ~= nil then lc.set(row.entry, this:GetChecked() and true or false) end
 	end)
 	b.paint = function(entry) b:SetChecked(lc.get(entry) and true or false) end
+	return b
+end
+
+-- A flat action button in the shared style; see the header comment for spec.
+function LibWidgets.NewButton(parent, spec)
+	spec = spec or {}
+	local b = CreateFrame("Button", nil, parent)
+	b:SetWidth(spec.width or 80); b:SetHeight(spec.height or 22)
+	styleFlatButton(b)
+	local fs = b:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	fs:SetPoint("CENTER", 0, 0)
+	fs:SetText(spec.text or "")
+	b.label = fs
+	function b.setText(text) fs:SetText(text or "") end
+	b:SetScript("OnMouseDown", function()
+		LibWidgets.CloseAllMenus()
+		this.label:SetPoint("CENTER", 1, -1)
+	end)
+	b:SetScript("OnMouseUp", function() this.label:SetPoint("CENTER", 0, 0) end)
+	if spec.onClick then b:SetScript("OnClick", spec.onClick) end
+	return b
+end
+
+-- A tooltip-backdrop-styled edit box; see the header comment for spec.
+function LibWidgets.NewTextBox(parent, spec)
+	spec = spec or {}
+	local e = CreateFrame("EditBox", nil, parent)
+	if spec.width then e:SetWidth(spec.width) end
+	e:SetHeight(spec.height or 22)
+	e:SetAutoFocus(false)
+	e:SetFontObject(GameFontHighlightSmall)
+	e:SetTextInsets(5, 5, 2, 2)
+	e:SetBackdrop(WIDGET_BACKDROP)
+	e:SetBackdropColor(0, 0, 0, 0.7)
+	e:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+	if spec.text then e:SetText(spec.text) end
+	e:SetScript("OnEditFocusGained", function() LibWidgets.CloseAllMenus() end)
+	e:SetScript("OnEnterPressed", function()
+		if spec.onCommit then spec.onCommit(this:GetText()) end
+		this:ClearFocus()
+	end)
+	e:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+	return e
+end
+
+-- A value-carrying slider; see the header comment for spec.
+function LibWidgets.NewSlider(parent, spec)
+	local s = CreateFrame("Slider", spec.name, parent, "OptionsSliderTemplate")
+	s:SetMinMaxValues(spec.min, spec.max)
+	s:SetValueStep(spec.step)
+	s:SetWidth(spec.width or 150); s:SetHeight(16)
+	getglobal(spec.name .. "Low"):SetText("")
+	getglobal(spec.name .. "High"):SetText("")
+	local title = getglobal(spec.name .. "Text")
+	local guarding = false
+	local function paint(v)
+		title:SetText(spec.format and spec.format(v) or tostring(v))
+	end
+	s:SetScript("OnValueChanged", function()
+		if guarding then return end
+		LibWidgets.CloseAllMenus()
+		if spec.onChange then spec.onChange(this:GetValue()) end
+		paint(this:GetValue())
+	end)
+	function s.setValue(v)
+		guarding = true
+		s:SetValue(v)
+		guarding = false
+		paint(v)
+	end
+	if spec.get then s.setValue(spec.get()) end
+	return s
+end
+
+-- A value-picker drop button; see the header comment for spec.
+function LibWidgets.NewDropButton(parent, spec)
+	local values = spec.values
+	local labels = spec.labels or {}
+	local tips   = spec.tips
+	local width  = spec.width or 92
+	local itemH  = spec.itemHeight or 14
+
+	local b = CreateFrame("Button", nil, parent)
+	b:SetWidth(width); b:SetHeight(spec.height or 20)
+	styleFlatButton(b)
+	local fs = b:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	fs:SetPoint("CENTER", 0, 0)
+	b.label = fs
+
+	function b.setValue(v)
+		b.value = v
+		fs:SetText(labels[v] or v or "")
+	end
+
+	local menu = CreateFrame("Frame", nil, spec.menuParent or b)
+	menu:SetBackdrop(WIDGET_BACKDROP)
+	menu:SetBackdropColor(0, 0, 0, 0.95)
+	menu:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.9)
+	menu:SetWidth(spec.menuWidth or width)
+	menu:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, 0)
+	menu:SetFrameStrata(spec.menuStrata or "DIALOG")
+	menu:Hide()
+	b.menu = menu
+
+	-- Entry buttons are pooled so a dynamic menu (spec.values as a function) can be
+	-- rebuilt on every open; a static menu builds once below.
+	menu.items = {}
+	local function menuItem(i)
+		local item = menu.items[i]
+		if item then return item end
+		item = CreateFrame("Button", nil, menu)
+		item:SetHeight(itemH)
+		item:SetPoint("TOPLEFT", menu, "TOPLEFT", 4, -(4 + (i - 1) * itemH))
+		item:SetPoint("RIGHT", menu, "RIGHT", -4, 0)
+		local ifs = item:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+		ifs:SetPoint("LEFT", item, "LEFT", 2, 0)
+		item.label = ifs
+		local hl = item:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints(item); hl:SetTexture(0.3, 0.3, 0.8, 0.5)
+		item:SetScript("OnClick", function()
+			LibWidgets.CloseAllMenus()
+			if spec.onSelect then spec.onSelect(this.value) end
+			if spec.get then b.setValue(this.value) end
+		end)
+		if tips then
+			item:SetScript("OnEnter", function()
+				GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+				GameTooltip:AddLine(tips[this.value] or "")
+				GameTooltip:Show()
+			end)
+			item:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		end
+		menu.items[i] = item
+		return item
+	end
+
+	local function buildItems(vals)
+		local n = table.getn(vals)
+		for i = 1, n do
+			local item = menuItem(i)
+			item.value = vals[i]
+			item.label:SetText(labels[vals[i]] or vals[i])
+			item:Show()
+		end
+		for i = n + 1, table.getn(menu.items) do menu.items[i]:Hide() end
+		menu:SetHeight(n * itemH + 8)
+	end
+	if type(values) ~= "function" then buildItems(values) end
+
+	b:SetScript("OnEnter", function()
+		this:SetBackdropBorderColor(0.9, 0.8, 0.2, 1)
+		if tips and this.value then
+			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+			GameTooltip:AddLine(tips[this.value] or "")
+			GameTooltip:Show()
+		end
+	end)
+	b:SetScript("OnLeave", function() this:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8); GameTooltip:Hide() end)
+	b:SetScript("OnClick", function()
+		if menu:IsShown() then
+			LibWidgets.CloseAllMenus()
+			return
+		end
+		-- Don't pop an empty menu -- there's nothing to select.
+		local vals = (type(values) == "function") and values() or values
+		if not vals or table.getn(vals) == 0 then return end
+		if type(values) == "function" then buildItems(vals) end
+		LibWidgets.CloseAllMenus()   -- at most one popup open at a time
+		activeMenu = menu
+		menu:Show()
+	end)
+
+	if spec.get then b.setValue(spec.get()) end
 	return b
 end
 
@@ -274,6 +528,7 @@ function LibWidgets.NewListEditor(parent, spec)
 
 	local function beginDrag(row)
 		if not row.index then return end
+		LibWidgets.CloseAllMenus()
 		drag.active = true
 		drag.from   = row.index
 		drag.before = row.index
@@ -428,26 +683,19 @@ function LibWidgets.NewListEditor(parent, spec)
 
 	local totalH = listH
 	if spec.add then
-		local addBtn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-		addBtn:SetWidth(50); addBtn:SetHeight(22); addBtn:SetText("Add")
+		local addBtn = LibWidgets.NewButton(parent, { text = "Add", width = 50, height = 22 })
 		addBtn:SetPoint("TOPRIGHT", listBox, "BOTTOMRIGHT", 0, -8)
 
-		local addBox = CreateFrame("EditBox", nil, parent)
-		addBox:SetHeight(22)
-		addBox:SetAutoFocus(false)
-		addBox:SetFontObject(GameFontHighlightSmall)
-		addBox:SetTextInsets(5, 5, 2, 2)
-		addBox:SetBackdrop(WIDGET_BACKDROP)
-		addBox:SetBackdropColor(0, 0, 0, 0.7)
-		addBox:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
-		addBox:SetPoint("TOPLEFT", listBox, "BOTTOMLEFT", 0, -8)
-		addBox:SetPoint("RIGHT", addBtn, "LEFT", -6, 0)
+		-- Forward-declared so `commit` (needed as both addBox's onCommit and
+		-- addBtn's onClick) can read the box back regardless of which one fired.
+		local addBox
 		local function commit()
 			local text = addBox:GetText()
 			if text and text ~= "" then spec.add.onAdd(text); addBox:SetText("") end
 		end
-		addBox:SetScript("OnEnterPressed", commit)
-		addBox:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+		addBox = LibWidgets.NewTextBox(parent, { onCommit = commit })
+		addBox:SetPoint("TOPLEFT", listBox, "BOTTOMLEFT", 0, -8)
+		addBox:SetPoint("RIGHT", addBtn, "LEFT", -6, 0)
 		addBtn:SetScript("OnClick", commit)
 
 		totalH = totalH + 8 + 22
