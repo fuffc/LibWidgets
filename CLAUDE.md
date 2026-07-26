@@ -3,20 +3,40 @@
 ## What this is
 
 A small, addon-agnostic UI widget library for 1.12 WoW addons. It currently
-houses five widgets:
+houses nine widgets:
 
 - `NewButton` — a flat, tooltip-backdrop-styled action button (text label,
   press-nudge feedback).
+- `NewCheckBox` — a standalone `UICheckButtonTemplate` checkbox with a
+  right-hand label and a `.setChecked(on)` resync method (the leading-control
+  checkbox inside `NewListEditor` is a separate, row-bound thing).
+- `NewColorSwatch` — a swatch button opening the stock `ColorPickerFrame` (with
+  opacity) over a caller-supplied `get`/`set` on a `{r,g,b,a}` array. The
+  `OpacitySliderFrame` reports `1 - alpha`; that inversion is contained here.
 - `NewTextBox` — a single-line edit box with the same tooltip-style backdrop
   (not `InputBoxTemplate` — its border renders a black bar at small heights),
-  committing on Enter.
+  committing on Enter. Optional `onChange` (live per-keystroke callback) and
+  `hint` (greyed placeholder shown while empty) fields cover live-filter/search
+  boxes without a separate widget.
+- `NewMultiLineEditBox` — a scrollable multi-line edit box (a
+  `UIPanelScrollFrameTemplate` wrapping a `SetMultiLine` `EditBox`) with the same
+  tooltip-style backdrop, for paste-in/copy-out blobs (import/export).
+- `NewScrollFrame` — a chrome-free vertical content scroller: a plain
+  `ScrollFrame` (no Blizzard scroll template) with a slim tinted right-edge
+  slider and mouse wheel. The caller fills its `.content` scroll child, sets that
+  child's height, and calls `.Update()` to re-fit the slider. `NewDropButton`'s
+  scrolling popup and WeakestAuras' options content pane both sit on it, so every
+  scrollbar in the addon reads as the same slim widget.
 - `NewSlider` — an `OptionsSliderTemplate` slider whose title carries the live
   value instead of the template's Low/High end labels, with a `.setValue(v)`
   method that resyncs the widget from external state without echoing back
   through `onChange`.
 - `NewDropButton` — a button showing the current value that drops a popup list
   of options to change it (no cycling), for small fixed or dynamic value sets
-  (an anchor point, a mode, a profile name).
+  (an anchor point, a mode, a profile name). With `spec.textureDir` it draws a
+  right-edge down-arrow (grey at rest, green on hover) as a menu affordance. A
+  long popup caps at `spec.maxVisibleItems` (default 8) rows and scrolls the
+  rest via a `NewScrollFrame`, so it reads like a short menu.
 - `NewListEditor` — a bordered `FauxScrollFrame`-backed row pool with an
   optional leading tristate/checkbox control, a colour-able name label,
   optional trailing per-column widgets, reorder (arrows + full
@@ -27,7 +47,7 @@ houses five widgets:
 
 Further widgets are expected to join it under the same library name over time.
 
-None of the five have any knowledge of a particular addon's data model —
+None of the nine have any knowledge of a particular addon's data model —
 every caller-specific behavior (what a button does, a slider's range/label,
 a text box's commit, a drop button's values, a list editor's backing
 array/reorder/paint) comes through the `spec` table (or plain args, for the
@@ -78,6 +98,25 @@ hiding a parent frame only suppresses a child's *visibility*, not its own
 `Shown` flag, so a menu left open when its host panel closes would otherwise
 pop back up still expanded the next time the panel reopens.
 
+## Where a `NewDropButton` popup is hosted
+
+The popup is parented to the button's **top-level ancestor** (the frame parented
+straight to `UIParent`, found by walking up the parent chain), not to the button
+itself — and defaults to `FULLSCREEN_DIALOG` strata. Hosting it on the button is
+the obvious choice but wrong for any drop button living inside a `ScrollFrame`:
+the popup then sits inside the scroll region, gets clipped where it overflows,
+and shares the scrolled rows' strata/level so it renders *behind* the controls
+below it. Hosting it on the top-level frame escapes both. It still `SetPoint`s
+its position to the button, so it tracks the button as normal. `spec.menuParent`
+/`spec.menuStrata` override both for callers that need to.
+
+The consequence for consumers: a popup is no longer a child of its button, so
+hiding the button (e.g. repainting a tab's controls) no longer hides the popup
+with it. A consuming addon that rebuilds its option controls in place must call
+`LibWidgets.CloseAllMenus()` at the top of that repaint (in addition to the
+`OnHide`/`OnMouseDown` wiring below), or a menu left open across a repaint
+orphans, floating over the newly-painted controls.
+
 ## Comment style
 
 Comments in `LibWidgets.lua` (and any future file in this folder) should stand
@@ -102,6 +141,15 @@ context, so citing it is describing the code, not its history.)
 
 ## Client constraints that shaped this design
 
+- **`SetFrameLevel` doesn't carry children on this client.** On modern WoW,
+  re-levelling a frame shifts its children to keep their relative order; on 1.12
+  it does not — the children keep their absolute levels. So bumping a container
+  frame's level to force it above same-strata siblings leaves its own child
+  frames *below* the container, where the container's backdrop draws over them.
+  This is why `NewDropButton`'s popup is not re-levelled on open (it would grey
+  out its own item buttons under the near-opaque menu backdrop); it relies on a
+  strata above the host panel plus `SetToplevel` instead. Order popups by strata
+  or `SetToplevel`, not by `SetFrameLevel` on a frame that has children.
 - **No self-path introspection.** WoW texture paths (`SetTexture`,
   `SetBackdrop`'s `bgFile`/`edgeFile`) are always absolute
   `Interface\AddOns\<addon>\...` strings, with no "relative to the

@@ -1,8 +1,11 @@
 -- LibWidgets -- a small, addon-agnostic UI widget library for 1.12 WoW
--- addons. Currently houses five widgets: NewButton (a flat action button),
+-- addons. Currently houses nine widgets: NewButton (a flat action button),
+-- NewCheckBox (a labelled checkbox), NewColorSwatch (a ColorPickerFrame swatch),
 -- NewSlider (a value-carrying OptionsSliderTemplate slider), NewTextBox (a
--- tooltip-backdrop-styled edit box), NewDropButton (a value-picker popup
--- button) and NewListEditor (a bordered FauxScrollFrame-backed row pool with
+-- tooltip-backdrop-styled edit box), NewMultiLineEditBox (a scrollable multi-line
+-- edit box), NewScrollFrame (a chrome-free content scroller), NewDropButton (a
+-- value-picker popup button)
+-- and NewListEditor (a bordered FauxScrollFrame-backed row pool with
 -- an optional leading tristate/checkbox control, a class/priority-coloured
 -- name label, optional trailing per-column widgets, reorder -- arrows + full
 -- drag-to-reorder with a ghost row, insertion indicator and cursor-edge
@@ -40,6 +43,22 @@
 -- Returns the button with a `.label` FontString and a `.setText(text)` method for
 -- relabeling later (e.g. a button whose face shows a live value).
 --
+-- NewCheckBox(parent, spec) -- a standalone labelled checkbox (UICheckButtonTemplate
+-- plus a right-hand label). spec:
+--   text, width/height (default 22)
+--   onClick(checked) -- called on a user toggle with the new boolean state
+--   get()            -- optional: seeds the initial checked state
+-- Returns the CheckButton with a `.label` FontString and a `.setChecked(on)` method
+-- that resyncs from external state without firing onClick.
+--
+-- NewColorSwatch(parent, spec) -- a swatch button that opens the stock
+-- ColorPickerFrame (with opacity). spec:
+--   get() -> {r,g,b,a}   -- current colour (a defaults to 1 if absent)
+--   set({r,g,b,a})       -- store a picked colour
+--   width/height (default 20), swatchSize (inner fill, default 14)
+-- Returns the button with a `.repaint()` method to re-read get() after an
+-- external change.
+--
 -- NewTextBox(parent, spec) -- a single-line edit box with a tooltip-style backdrop
 -- (not InputBoxTemplate -- that template's border textures render a black bar at
 -- small heights). spec:
@@ -47,36 +66,90 @@
 --   on both TOPLEFT and RIGHT), height (default 22), text (initial contents)
 --   onCommit(text) -- called on Enter (the box then clears focus); Escape clears
 --                     focus with no commit. Omit for a read-only display box.
+--   onChange(text) -- optional: called on every keystroke (live filtering); fires
+--                     on user edits, not on the initial `text` seed.
+--   hint           -- optional: greyed placeholder text shown while the box is empty.
+--
+-- NewMultiLineEditBox(parent, spec) -- a scrollable multi-line edit box (a
+-- UIPanelScrollFrameTemplate ScrollFrame wrapping a SetMultiLine EditBox) with
+-- the same tooltip-style backdrop, for paste-in/copy-out blobs (import/export).
+-- spec:
+--   width (default 300), height (default 150), text (initial contents)
+--   onChange(text) -- optional: called on every edit
+-- Returns the outer frame with methods `.setText(t)`, `.getText()`,
+-- `.focusSelectAll()` (focus + highlight everything, so the user can Ctrl-C an
+-- export immediately) and `.clearFocus()`, plus the `.edit` EditBox itself.
 --
 -- NewSlider(parent, spec) -- a horizontal OptionsSliderTemplate slider whose title
 -- carries the live value instead of the template's Low/High end labels. spec:
 --   name          -- unique global frame name (the template needs one to address
 --                    "<name>Low"/"<name>High"/"<name>Text")
 --   min, max, step, width (default 150)
---   onChange(v)   -- called on every user drag
---   format(v)     -- optional: -> the full title text (defaults to just the number)
+--   onChange(v)   -- called on every user drag, and on a committed edit-box entry
+--                    when `editable` is set
+--   format(v)     -- optional: -> the full title text (defaults to the number
+--                    rounded to `decimals` places)
+--   decimals      -- max decimal places shown in the default title format and the
+--                    editable box's display (default 2); trailing zeros are
+--                    trimmed (1 shows as "1", not "1.00"). The same rounding is
+--                    available standalone as LibWidgets.FormatNumber(v, decimals)
+--                    for a caller building its own `format`.
 --   get()         -- optional: seeds the initial value through the same guard
 --                    `.setValue` uses, so seeding never echoes through onChange
+--   editable      -- optional: adds a small edit box to the right of the slider
+--                    bar showing the current value, editable directly (commits on
+--                    Enter, clamped to min/max, rounded to `decimals`); the bar
+--                    itself narrows by `inputWidth` + gap to keep the total
+--                    footprint at `width`
+--   inputWidth    -- width of that edit box (default 44)
 -- Returns the slider with a `.setValue(v)` method: sets the value and repaints the
--- title without firing onChange, for resyncing the widget from external state.
+-- title (and the edit box, if any) without firing onChange, for resyncing the
+-- widget from external state.
+--
+-- NewScrollFrame(parent, spec) -- a chrome-free vertical content scroller: a plain
+-- ScrollFrame (no Blizzard scroll template) with a slim tinted right-edge slider
+-- and mouse wheel, for scrolling arbitrary content that can outgrow its frame.
+-- spec:
+--   wheelStep   -- pixels scrolled per wheel notch (default 30)
+--   sliderInset -- x-nudge of the slider from the frame's right edge (default 0)
+-- The caller anchors the returned ScrollFrame, parents its content into the
+-- `.content` scroll child (managing that child's width itself -- reserve a few px
+-- on the right for the slider), sets `.content`'s height, then calls `.Update()`
+-- so the slider re-fits (again after any later content-height or frame-size
+-- change). Also exposes `.slider` and `.wheel` (the wheel handler, so a child that
+-- captures wheel focus -- e.g. a button -- can forward to it via SetScript).
 --
 -- NewDropButton(parent, spec) -- a button showing the current value that drops a
 -- popup list of options to change it (no cycling). spec:
 --   width, height (button size; height defaults to 20)
 --   menuWidth (defaults to width), itemHeight (defaults to 14)
+--   maxVisibleItems -- popup caps at this many rows (default 8) and scrolls the
+--                    rest via a slim right-edge slider + mouse wheel; shorter
+--                    menus size to fit with no slider
 --   values        -- ordered array of stored values (menu order), or a function
 --                    returning one: the menu rebuilds on every open (dynamic sets,
 --                    e.g. profile names)
 --   labels        -- value -> display label; optional (defaults to the raw value)
 --   tips          -- value -> tooltip line; optional
 --   onSelect(v)   -- called when a menu entry is picked
+--   textureDir    -- optional: absolute path to this library's textures folder. When
+--                    given, a down-arrow (grey at rest, green on hover) is drawn on
+--                    the button's right edge to signal it opens a menu.
 --   get()         -- optional: when given, the button self-paints from it on build
 --                    and after each pick via `.setValue`. Omit it for a caller that
 --                    repaints recycled instances itself each draw (`.setValue(v)`
 --                    works either way).
---   menuParent, menuStrata -- override the popup's parent/strata; it defaults to
---                    the button itself at "DIALOG", which is enough unless the
---                    button lives inside a ScrollFrame that would clip it.
+--   menuParent, menuStrata -- override the popup's parent/strata. By default the
+--                    popup is hosted on the button's top-level ancestor frame (the
+--                    one parented straight to UIParent) at "FULLSCREEN_DIALOG",
+--                    NOT on the button: parented under the button, a popup dropped
+--                    from a control inside a ScrollFrame gets clipped where it
+--                    overflows the scroll region and shares the rows' strata,
+--                    landing behind the controls below it. It still anchors its
+--                    position to the button, so it tracks it.
+-- The popup is toplevel'd so it orders above sibling same-strata popups on
+-- interaction; its high strata already puts it above the host panel. It is
+-- deliberately NOT re-levelled on open -- see the open handler for why.
 -- The live value is stashed on `.value` for the button's own hover tooltip. At
 -- most one NewDropButton popup is ever open at once -- see CloseAllMenus below.
 --
@@ -124,14 +197,33 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 4
-LibWidgets = LibStub:NewLibrary(MAJOR, MINOR)
-if not LibWidgets then return end
+local MAJOR, MINOR = "LibWidgets-1.0", 8
+-- Bind the global only on the winning copy. NewLibrary returns nil for a copy
+-- that loses the version race; assigning that nil straight to the global would
+-- wipe out the winner's binding (an older/equal copy loading last nulls it),
+-- so keep the return in a local and publish only when we actually won.
+local lib = LibStub:NewLibrary(MAJOR, MINOR)
+if not lib then return end
+LibWidgets = lib
 
 local BTN_W   = 20
 local BTN_GAP = 2
 local COL_GAP = 6
 local STATE_W = 20
+
+-- Rounds to `decimals` places and trims trailing zeros (and a bare trailing
+-- "." if decimals rounded away entirely), so an integer value reads as "1"
+-- rather than "1.00" while a fractional one still shows up to `decimals`
+-- places -- NewSlider's default title/edit-box formatting.
+local function formatNumber(v, decimals)
+	local s = string.format("%." .. (decimals or 2) .. "f", v)
+	if string.find(s, "%.") then
+		s = string.gsub(s, "0+$", "")
+		s = string.gsub(s, "%.$", "")
+	end
+	return s
+end
+LibWidgets.FormatNumber = formatNumber
 
 local WIDGET_BACKDROP = {
 	bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -265,6 +357,65 @@ function LibWidgets.NewButton(parent, spec)
 	return b
 end
 
+-- A standalone labelled checkbox; see the header comment for spec.
+function LibWidgets.NewCheckBox(parent, spec)
+	spec = spec or {}
+	local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+	cb:SetWidth(spec.width or 22); cb:SetHeight(spec.height or 22)
+	local fs = cb:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	fs:SetPoint("LEFT", cb, "RIGHT", 2, 0)
+	fs:SetText(spec.text or "")
+	cb.label = fs
+	cb:SetScript("OnClick", function()
+		LibWidgets.CloseAllMenus()
+		if spec.onClick then spec.onClick(this:GetChecked() and true or false) end
+	end)
+	-- Resync from external state without echoing back through onClick (OnClick
+	-- fires only on a user click, not SetChecked).
+	function cb.setChecked(on) cb:SetChecked(on and true or false) end
+	if spec.get then cb:SetChecked(spec.get() and true or false) end
+	return cb
+end
+
+-- A colour swatch opening the stock ColorPickerFrame; see the header comment
+-- for spec. OpacitySliderFrame reports 1-alpha, hence the inversions.
+function LibWidgets.NewColorSwatch(parent, spec)
+	spec = spec or {}
+	local get, set = spec.get, spec.set
+	local sz = spec.swatchSize or 14
+	local b = CreateFrame("Button", nil, parent)
+	b:SetWidth(spec.width or 20); b:SetHeight(spec.height or 20)
+	b:SetBackdrop(WIDGET_BACKDROP)
+	b:SetBackdropColor(0, 0, 0, 1)
+	b:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+	local tex = b:CreateTexture(nil, "OVERLAY")
+	tex:SetPoint("CENTER", 0, 0); tex:SetWidth(sz); tex:SetHeight(sz)
+	local function paint()
+		local c = get() or { 1, 1, 1, 1 }
+		tex:SetTexture(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+	end
+	paint()
+	b.repaint = paint
+	b:SetScript("OnClick", function()
+		LibWidgets.CloseAllMenus()
+		local c = get() or { 1, 1, 1, 1 }
+		local cr, cg, cbl, ca = c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1
+		ColorPickerFrame.func = function()
+			local r, g, bl = ColorPickerFrame:GetColorRGB()
+			local a = OpacitySliderFrame and (1 - OpacitySliderFrame:GetValue()) or 1
+			set({ r, g, bl, a }); paint()
+		end
+		ColorPickerFrame.opacityFunc = ColorPickerFrame.func
+		ColorPickerFrame.cancelFunc = function() set({ cr, cg, cbl, ca }); paint() end
+		ColorPickerFrame.opacity = 1 - ca
+		ColorPickerFrame.hasOpacity = 1
+		ColorPickerFrame:SetColorRGB(cr, cg, cbl)
+		ColorPickerFrame:SetFrameStrata("DIALOG")
+		ShowUIPanel(ColorPickerFrame)
+	end)
+	return b
+end
+
 -- A tooltip-backdrop-styled edit box; see the header comment for spec.
 function LibWidgets.NewTextBox(parent, spec)
 	spec = spec or {}
@@ -277,7 +428,32 @@ function LibWidgets.NewTextBox(parent, spec)
 	e:SetBackdrop(WIDGET_BACKDROP)
 	e:SetBackdropColor(0, 0, 0, 0.7)
 	e:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+
+	-- Greyed placeholder shown only while the box is empty (1.12 has no native
+	-- placeholder/SearchBoxTemplate to borrow one from).
+	local hint
+	if spec.hint then
+		hint = e:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+		hint:SetPoint("LEFT", 5, 0)
+		hint:SetText(spec.hint)
+	end
+	local function updateHint()
+		if hint then
+			if e:GetText() == "" then hint:Show() else hint:Hide() end
+		end
+	end
+
+	-- Seed before wiring OnTextChanged so the initial value doesn't echo through
+	-- spec.onChange (matches NewSlider's seed-doesn't-fire-onChange contract).
 	if spec.text then e:SetText(spec.text) end
+	updateHint()
+	if spec.onChange or hint then
+		e:SetScript("OnTextChanged", function()
+			updateHint()
+			if spec.onChange then spec.onChange(this:GetText()) end
+		end)
+	end
+
 	e:SetScript("OnEditFocusGained", function() LibWidgets.CloseAllMenus() end)
 	e:SetScript("OnEnterPressed", function()
 		if spec.onCommit then spec.onCommit(this:GetText()) end
@@ -287,26 +463,126 @@ function LibWidgets.NewTextBox(parent, spec)
 	return e
 end
 
+-- A scrollable multi-line edit box; see the header comment for spec. The
+-- UIPanelScrollFrameTemplate ScrollFrame needs a unique global name (its
+-- scrollbar child is "<name>ScrollBar"), so instances are counted.
+local mleSeq = 0
+function LibWidgets.NewMultiLineEditBox(parent, spec)
+	spec = spec or {}
+	mleSeq = mleSeq + 1
+	local w = spec.width or 300
+	local h = spec.height or 150
+
+	local box = CreateFrame("Frame", nil, parent)
+	box:SetWidth(w); box:SetHeight(h)
+	box:SetBackdrop(WIDGET_BACKDROP)
+	box:SetBackdropColor(0, 0, 0, 0.7)
+	box:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+
+	local scroll = CreateFrame("ScrollFrame", "LibWidgetsMLE" .. mleSeq .. "Scroll", box, "UIPanelScrollFrameTemplate")
+	scroll:SetPoint("TOPLEFT", box, "TOPLEFT", 5, -5)
+	-- UIPanelScrollFrameTemplate parks its scrollbar ~26px in from the right.
+	scroll:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -26, 5)
+
+	local edit = CreateFrame("EditBox", nil, scroll)
+	edit:SetMultiLine(true)
+	edit:SetAutoFocus(false)
+	edit:SetFontObject(GameFontHighlightSmall)
+	edit:SetTextInsets(4, 4, 4, 4)
+	edit:SetWidth(w - 5 - 26 - 8)
+	edit:SetHeight(2000) -- generously tall; the scroll frame clips/scrolls it
+	if spec.text then edit:SetText(spec.text) end
+	edit:SetScript("OnEditFocusGained", function() LibWidgets.CloseAllMenus() end)
+	edit:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+	edit:SetScript("OnTextChanged", function()
+		local sf = this:GetParent()
+		sf:UpdateScrollChildRect()
+		if spec.onChange then spec.onChange(this:GetText()) end
+	end)
+	scroll:SetScrollChild(edit)
+	scroll:EnableMouseWheel(true)
+	scroll:SetScript("OnMouseWheel", function()
+		local range = this:GetVerticalScrollRange()
+		local v = this:GetVerticalScroll() - arg1 * 20
+		if v < 0 then v = 0 elseif v > range then v = range end
+		this:SetVerticalScroll(v)
+	end)
+
+	box.edit = edit
+	function box.setText(t) edit:SetText(t or "") end
+	function box.getText() return edit:GetText() end
+	function box.clearFocus() edit:ClearFocus() end
+	function box.focusSelectAll()
+		edit:SetFocus()
+		edit:HighlightText()
+	end
+	return box
+end
+
 -- A value-carrying slider; see the header comment for spec.
 function LibWidgets.NewSlider(parent, spec)
+	local decimals = spec.decimals or 2
+	-- editable's edit box eats into the slider bar's share of `width` rather
+	-- than extending the total footprint, so a caller that opts in doesn't
+	-- also need to re-budget its own layout math.
+	local totalW = spec.width or 150
+	local inputW = spec.editable and (spec.inputWidth or 44) or 0
+	local gap = spec.editable and 6 or 0
+	local sliderW = totalW - inputW - gap
+	if sliderW < 40 then sliderW = 40 end
+
 	local s = CreateFrame("Slider", spec.name, parent, "OptionsSliderTemplate")
 	s:SetMinMaxValues(spec.min, spec.max)
 	s:SetValueStep(spec.step)
-	s:SetWidth(spec.width or 150); s:SetHeight(16)
+	s:SetWidth(sliderW); s:SetHeight(16)
 	getglobal(spec.name .. "Low"):SetText("")
 	getglobal(spec.name .. "High"):SetText("")
 	local title = getglobal(spec.name .. "Text")
 	local guarding = false
-	local function paint(v)
-		title:SetText(spec.format and spec.format(v) or tostring(v))
+
+	local input
+	if spec.editable then
+		input = LibWidgets.NewTextBox(parent, { width = inputW, height = 18 })
+		input:SetPoint("LEFT", s, "RIGHT", gap, 0)
 	end
+
+	local function paint(v)
+		title:SetText(spec.format and spec.format(v) or formatNumber(v, decimals))
+		if input then input:SetText(formatNumber(v, decimals)) end
+	end
+
 	s:SetScript("OnValueChanged", function()
 		if guarding then return end
 		LibWidgets.CloseAllMenus()
 		if spec.onChange then spec.onChange(this:GetValue()) end
 		paint(this:GetValue())
 	end)
+
+	if input then
+		-- Commits on Enter only (matches NewTextBox's own contract elsewhere in
+		-- this library) -- typing doesn't move the slider live, so there's no
+		-- feedback loop to guard against mid-edit.
+		input:SetScript("OnEnterPressed", function()
+			local v = tonumber(this:GetText())
+			if v then
+				if spec.min and v < spec.min then v = spec.min end
+				if spec.max and v > spec.max then v = spec.max end
+				s:SetValue(v) -- fires OnValueChanged -> onChange + paint
+			else
+				paint(s:GetValue()) -- unparseable entry: revert the box
+			end
+			this:ClearFocus()
+		end)
+		input:SetScript("OnEscapePressed", function() paint(s:GetValue()); this:ClearFocus() end)
+	end
+
 	function s.setValue(v)
+		-- Callers can be one step ahead of the value they read (a field added to
+		-- a data model after some saved entries predate it, before their next
+		-- MergeDefaults pass): SetValue throws a hard "Usage:" error on a
+		-- non-number, which would otherwise take down the whole options panel
+		-- over one stale field instead of just that slider.
+		v = tonumber(v) or spec.min or 0
 		guarding = true
 		s:SetValue(v)
 		guarding = false
@@ -314,6 +590,81 @@ function LibWidgets.NewSlider(parent, spec)
 	end
 	if spec.get then s.setValue(spec.get()) end
 	return s
+end
+
+-- The top-level frame in `frame`'s parent chain (the one parented straight to
+-- UIParent). A popup hosted here escapes any ScrollFrame that would clip it and
+-- the local strata/level stacking of the controls it drops over.
+local function topLevelAncestor(frame)
+	local f = frame
+	while f do
+		local p = f:GetParent()
+		if not p or p == UIParent or p == WorldFrame then return f end
+		f = p
+	end
+	return frame
+end
+
+-- A bare content scroller; see the header comment for spec. The caller anchors
+-- the returned ScrollFrame, fills `.content` and sets its height, then calls
+-- `.Update()` so the slim right-edge slider re-fits.
+function LibWidgets.NewScrollFrame(parent, spec)
+	spec = spec or {}
+	local wheelStep = spec.wheelStep or 30
+
+	local frame = CreateFrame("ScrollFrame", nil, parent)
+	local content = CreateFrame("Frame", nil, frame)
+	content:SetWidth(1); content:SetHeight(1)
+	frame:SetScrollChild(content)
+	frame.content = content
+
+	-- Slim tinted slider, no track/arrow chrome. A normal (non-scroll) child of
+	-- the ScrollFrame, so it isn't scrolled or clipped with the content.
+	local slider = CreateFrame("Slider", nil, frame)
+	slider:SetOrientation("VERTICAL")
+	slider:SetWidth(6)
+	slider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", spec.sliderInset or 0, 0)
+	slider:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", spec.sliderInset or 0, 0)
+	slider:SetThumbTexture(WIDGET_BACKDROP.bgFile)   -- recoloured solid below
+	slider.thumb = slider:GetThumbTexture()
+	slider.thumb:SetTexture(0.5, 0.5, 0.5, 0.9)
+	slider.thumb:SetWidth(6)
+	slider:SetScript("OnValueChanged", function() frame:SetVerticalScroll(this:GetValue()) end)
+	slider:Hide()
+	frame.slider = slider
+
+	-- Refit the slider to the current content vs viewport height. Call after
+	-- changing the content's height or the frame's own size.
+	function frame.Update()
+		local view = frame:GetHeight()
+		local range = content:GetHeight() - view
+		if range < 0 then range = 0 end
+		slider:SetMinMaxValues(0, range)
+		if range > 0 and view > 0 then
+			-- Thumb sized to the visible fraction, floored so it stays grabbable.
+			local th = math.floor(view * view / content:GetHeight())
+			slider.thumb:SetHeight(th < 16 and 16 or th)
+			slider:Show()
+		else
+			slider:SetValue(0)
+			slider:Hide()
+		end
+	end
+
+	-- arg1 is +1 up / -1 down. Exposed as `.wheel` so children that capture the
+	-- wheel focus (item buttons) can forward to it.
+	local function wheel()
+		local range = content:GetHeight() - frame:GetHeight()
+		if range <= 0 then return end
+		local new = frame:GetVerticalScroll() - arg1 * wheelStep
+		if new < 0 then new = 0 elseif new > range then new = range end
+		frame:SetVerticalScroll(new); slider:SetValue(new)
+	end
+	frame:EnableMouseWheel(true)
+	frame:SetScript("OnMouseWheel", wheel)
+	frame.wheel = wheel
+
+	return frame
 end
 
 -- A value-picker drop button; see the header comment for spec.
@@ -331,20 +682,55 @@ function LibWidgets.NewDropButton(parent, spec)
 	fs:SetPoint("CENTER", 0, 0)
 	b.label = fs
 
+	-- A down-arrow on the right edge signals the button opens a menu. It needs
+	-- the library's own textures path, so it only appears when spec.textureDir is
+	-- given. Desaturated grey at rest, green on hover -- the same enabled/disabled
+	-- cue the list editor's reorder arrows use.
+	if spec.textureDir then
+		local arrow = b:CreateTexture(nil, "OVERLAY")
+		arrow:SetWidth(9); arrow:SetHeight(9)
+		arrow:SetPoint("RIGHT", b, "RIGHT", -5, 0)
+		arrow:SetTexture(spec.textureDir .. "down")
+		arrow:SetVertexColor(MOVE_NONE[1], MOVE_NONE[2], MOVE_NONE[3])
+		b.arrow = arrow
+		-- Span the label from the left edge to the arrow and centre-justify, so it
+		-- sits centred in the space left of the arrow rather than centred on the
+		-- whole button (which the arrow would then crowd off-centre).
+		fs:ClearAllPoints()
+		fs:SetPoint("LEFT", b, "LEFT", 2, 0)
+		fs:SetPoint("RIGHT", arrow, "LEFT", -2, 0)
+		fs:SetJustifyH("CENTER")
+	end
+
 	function b.setValue(v)
 		b.value = v
 		fs:SetText(labels[v] or v or "")
 	end
 
-	local menu = CreateFrame("Frame", nil, spec.menuParent or b)
+	-- Hosted on the button's top-level ancestor (not the button) so a ScrollFrame
+	-- in between can't clip it and it doesn't share the rows' strata; still anchored
+	-- to the button below so it tracks position.
+	local menu = CreateFrame("Frame", nil, spec.menuParent or topLevelAncestor(b))
 	menu:SetBackdrop(WIDGET_BACKDROP)
 	menu:SetBackdropColor(0, 0, 0, 0.95)
 	menu:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.9)
 	menu:SetWidth(spec.menuWidth or width)
 	menu:SetPoint("TOPLEFT", b, "BOTTOMLEFT", 0, 0)
-	menu:SetFrameStrata(spec.menuStrata or "DIALOG")
+	menu:SetFrameStrata(spec.menuStrata or "FULLSCREEN_DIALOG")
+	menu:SetToplevel(true)
 	menu:Hide()
 	b.menu = menu
+
+	-- Long menus (e.g. a condition's property list) cap at maxVisible items and
+	-- scroll the rest through a NewScrollFrame (its ScrollFrame clips overflow to
+	-- the menu border, and its slim slider reads the same as a short menu).
+	local maxVisible = spec.maxVisibleItems or 8
+	local bodyW = (spec.menuWidth or width) - 8
+	local scroll = LibWidgets.NewScrollFrame(menu, { wheelStep = itemH * 2 })
+	scroll:SetPoint("TOPLEFT", menu, "TOPLEFT", 4, -4)
+	scroll:SetPoint("BOTTOMRIGHT", menu, "BOTTOMRIGHT", -4, 4)
+	local content = scroll.content
+	content:SetWidth(bodyW)
 
 	-- Entry buttons are pooled so a dynamic menu (spec.values as a function) can be
 	-- rebuilt on every open; a static menu builds once below.
@@ -352,10 +738,12 @@ function LibWidgets.NewDropButton(parent, spec)
 	local function menuItem(i)
 		local item = menu.items[i]
 		if item then return item end
-		item = CreateFrame("Button", nil, menu)
+		item = CreateFrame("Button", nil, content)
 		item:SetHeight(itemH)
-		item:SetPoint("TOPLEFT", menu, "TOPLEFT", 4, -(4 + (i - 1) * itemH))
-		item:SetPoint("RIGHT", menu, "RIGHT", -4, 0)
+		item:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(i - 1) * itemH)
+		item:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+		item:EnableMouseWheel(true)
+		item:SetScript("OnMouseWheel", scroll.wheel)
 		local ifs = item:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
 		ifs:SetPoint("LEFT", item, "LEFT", 2, 0)
 		item.label = ifs
@@ -387,19 +775,28 @@ function LibWidgets.NewDropButton(parent, spec)
 			item:Show()
 		end
 		for i = n + 1, table.getn(menu.items) do menu.items[i]:Hide() end
-		menu:SetHeight(n * itemH + 8)
+
+		local visible = n < maxVisible and n or maxVisible
+		menu:SetHeight(visible * itemH + 8)
+		content:SetHeight(n * itemH)
+		scroll:SetVerticalScroll(0)
+		scroll.Update()
 	end
 	if type(values) ~= "function" then buildItems(values) end
 
 	b:SetScript("OnEnter", function()
 		this:SetBackdropBorderColor(0.9, 0.8, 0.2, 1)
+		if this.arrow then this.arrow:SetVertexColor(MOVE_OK[1], MOVE_OK[2], MOVE_OK[3]) end
 		if tips and this.value then
 			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
 			GameTooltip:AddLine(tips[this.value] or "")
 			GameTooltip:Show()
 		end
 	end)
-	b:SetScript("OnLeave", function() this:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8); GameTooltip:Hide() end)
+	b:SetScript("OnLeave", function()
+		this:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8); GameTooltip:Hide()
+		if this.arrow then this.arrow:SetVertexColor(MOVE_NONE[1], MOVE_NONE[2], MOVE_NONE[3]) end
+	end)
 	b:SetScript("OnClick", function()
 		if menu:IsShown() then
 			LibWidgets.CloseAllMenus()
@@ -410,8 +807,16 @@ function LibWidgets.NewDropButton(parent, spec)
 		if not vals or table.getn(vals) == 0 then return end
 		if type(values) == "function" then buildItems(vals) end
 		LibWidgets.CloseAllMenus()   -- at most one popup open at a time
+		-- The high strata alone (above the host panel's) puts the popup over the
+		-- controls it covers; SetToplevel handles ordering against sibling
+		-- same-strata popups. Deliberately NOT re-levelling the menu on this
+		-- client: SetFrameLevel doesn't carry a frame's children with it here, so
+		-- bumping the menu would leave its item buttons below the menu's own
+		-- near-opaque backdrop, greying them out.
+		scroll:SetVerticalScroll(0)   -- always open at the top
 		activeMenu = menu
 		menu:Show()
+		scroll.Update()   -- refit the slider now the menu is laid out
 	end)
 
 	if spec.get then b.setValue(spec.get()) end
