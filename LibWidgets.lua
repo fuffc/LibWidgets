@@ -152,8 +152,10 @@
 -- `.content` scroll child (managing that child's width itself -- reserve a few px
 -- on the right for the slider), sets `.content`'s height, then calls `.Update()`
 -- so the slider re-fits (again after any later content-height or frame-size
--- change). Also exposes `.slider` and `.wheel` (the wheel handler, so a child that
--- captures wheel focus -- e.g. a button -- can forward to it via SetScript).
+-- change). `.Update(viewH)` takes the viewport height explicitly, which a caller
+-- sizing this frame by anchors rather than SetHeight must do -- see the comment
+-- on Update. Also exposes `.slider` and `.wheel` (the wheel handler, so a child
+-- that captures wheel focus -- e.g. a button -- can forward to it via SetScript).
 --
 -- NewDropButton(parent, spec) -- a button showing the current value that drops a
 -- popup list of options to change it (no cycling). spec:
@@ -280,7 +282,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 12
+local MAJOR, MINOR = "LibWidgets-1.0", 13
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
@@ -894,8 +896,16 @@ function LibWidgets.NewScrollFrame(parent, spec)
 
 	-- Refit the slider to the current content vs viewport height. Call after
 	-- changing the content's height or the frame's own size.
-	function frame.Update()
-		local view = frame:GetHeight()
+	--
+	-- `viewH` overrides the viewport height instead of reading it back off the
+	-- frame. A caller whose ScrollFrame takes its size from anchors rather than
+	-- SetHeight must pass it: this client resolves anchor-derived geometry at
+	-- layout time, so GetHeight answers 0 for a frame that has never been shown
+	-- and the *previous* size for one whose anchor target was just resized --
+	-- either way the slider gets sized against a viewport that isn't the one on
+	-- screen, or hidden when it is needed.
+	function frame.Update(viewH)
+		local view = viewH or frame:GetHeight()
 		local range = content:GetHeight() - view
 		if range < 0 then range = 0 end
 		slider:SetMinMaxValues(0, range)
@@ -1012,6 +1022,7 @@ function LibWidgets.NewDropButton(parent, spec)
 	local scroll = LibWidgets.NewScrollFrame(menu, { wheelStep = itemH * 2 })
 	scroll:SetPoint("TOPLEFT", menu, "TOPLEFT", 4, -4)
 	scroll:SetPoint("BOTTOMRIGHT", menu, "BOTTOMRIGHT", -4, 4)
+	menu.scroll = scroll
 	local content = scroll.content
 	content:SetWidth(bodyW)
 
@@ -1082,7 +1093,12 @@ function LibWidgets.NewDropButton(parent, spec)
 		menu:SetHeight(visible * itemH + 8)
 		content:SetHeight(n * itemH)
 		scroll:SetVerticalScroll(0)
-		scroll.Update()
+		-- The scroll frame is inset 4px into the menu on every side, so the
+		-- viewport is exactly the rows it shows. Handing that to Update is what
+		-- keeps the slider correct on a menu the height was only just set on --
+		-- see the note on Update itself.
+		menu.viewH = visible * itemH
+		scroll.Update(menu.viewH)
 	end
 	if type(values) ~= "function" then buildItems(values) end
 
@@ -1118,7 +1134,6 @@ function LibWidgets.NewDropButton(parent, spec)
 		scroll:SetVerticalScroll(0)   -- always open at the top
 		activeMenu = menu
 		menu:Show()
-		scroll.Update()   -- refit the slider now the menu is laid out
 	end)
 
 	if spec.get then b.setValue(spec.get()) end
