@@ -1,16 +1,43 @@
 -- LibWidgets -- a small, addon-agnostic UI widget library for 1.12 WoW
--- addons. Currently houses nine widgets: NewButton (a flat action button),
+-- addons. Currently houses eleven widgets: NewButton (a flat action button),
+-- NewIconButton (a small texture-faced button),
 -- NewCheckBox (a labelled checkbox), NewColorSwatch (a ColorPickerFrame swatch),
 -- NewSlider (a value-carrying OptionsSliderTemplate slider), NewTextBox (a
--- tooltip-backdrop-styled edit box), NewMultiLineEditBox (a scrollable multi-line
--- edit box), NewScrollFrame (a chrome-free content scroller), NewDropButton (a
+-- tooltip-backdrop-styled edit box), NewMultiLineEditBox (a scrollable
+-- multi-line edit box on this library's own slim slider, sized to its text),
+-- NewScrollFrame (a chrome-free content scroller), NewDropButton (a
 -- value-picker popup button)
+-- NewIconPicker (a searchable icon-browser dialog)
 -- and NewListEditor (a bordered FauxScrollFrame-backed row pool with
 -- an optional leading tristate/checkbox control, a class/priority-coloured
 -- name label, optional trailing per-column widgets, reorder -- arrows + full
 -- drag-to-reorder with a ghost row, insertion indicator and cursor-edge
 -- auto-scroll -- and an optional add row built from NewButton + NewTextBox).
 -- Further widgets are expected to join it under the same library name.
+--
+-- NewCodeEditBox decorates NewMultiLineEditBox into a syntax-coloured Lua
+-- editor: it colours on blur (never while typing, so the caret never lands
+-- inside a colour escape), carries its own red error line under the box, and
+-- with `spec.default` a two-click-confirm Reset button above it. Its spec:
+--   width, height, text, colors, font = {path, size, flags},
+--   onChange(code)   -- every keystroke, uncommitted
+--   onCommit(code)   -- focus lost, or a confirmed reset
+--   validate(code)   -- returns an error string or nil; drives the error line
+--   default          -- string or function; Reset appears only when set
+--   live             -- colour per keystroke instead of on blur (see below)
+--   tabWidth         -- spaces per indent level, or false for hard tabs
+-- Tab re-indents the whole buffer. Methods: setText/getText/clearFocus/setSize/
+-- indent, plus setValidate/setDefault/setHandlers/setLive/setTabWidth for a
+-- consumer that pools and rebinds one instance.
+--
+-- `live` colours under the caret while typing, which needs the caret saved and
+-- restored around every recolour; it is off unless asked for.
+--
+-- It also carries one non-widget group, at the bottom of this file: a Lua
+-- source tokenizer and the syntax-colouring helpers built on it (LuaColorize,
+-- LuaEncode/LuaDecode, LuaStripColors, LuaPadWithLinebreaks). They live here
+-- because the code edit box that uses them is library code; they are pure
+-- string -> string and touch no frame.
 --
 -- Every caller-specific bit of NewListEditor -- the backing list, how to
 -- reorder/remove an entry, how to paint the name/leading control/any
@@ -42,6 +69,15 @@
 --   text, width, height (default 22), onClick
 -- Returns the button with a `.label` FontString and a `.setText(text)` method for
 -- relabeling later (e.g. a button whose face shows a live value).
+--
+-- NewIconButton(parent, spec) -- the small texture-faced button the list editor's
+-- own rows use (reorder/delete), for a caller needing the same control outside a
+-- list (e.g. a collapse arrow or a delete affordance on a section header). spec:
+--   icon      -- texture path (LibWidgets.ICON_DELETE is the list editor's own
+--                delete art, published so both read the same)
+--   width (default 20), height (default 18), iconSize (default 11)
+--   onClick
+-- Returns the button with its texture as `.icon`, so a toggle can re-SetTexture it.
 --
 -- NewCheckBox(parent, spec) -- a standalone labelled checkbox (UICheckButtonTemplate
 -- plus a right-hand label). spec:
@@ -131,6 +167,15 @@
 --                    e.g. profile names)
 --   labels        -- value -> display label; optional (defaults to the raw value)
 --   tips          -- value -> tooltip line; optional
+--   swatches      -- optional: value -> texture path. Turns the picker into a
+--                    preview picker: the button's face and every menu entry draw
+--                    that texture as a filled green bar behind the label, so a
+--                    bar-texture choice is judged by how it actually looks rather
+--                    than by its name. Menu rows grow to `itemHeight` 20 by
+--                    default so a swatch is legible. (Lookups go through the table
+--                    on every paint, so a caller recycling one button across
+--                    fields can hand in a proxy table that forwards to whichever
+--                    field is currently bound, the same way `labels` does.)
 --   onSelect(v)   -- called when a menu entry is picked
 --   textureDir    -- optional: absolute path to this library's textures folder. When
 --                    given, a down-arrow (grey at rest, green on hover) is drawn on
@@ -161,6 +206,43 @@
 -- OnMouseDown for a blank-area click, or OnHide so a menu left open under a
 -- closed panel doesn't pop back up still expanded next time it opens).
 --
+-- NewIconPicker(parent, spec) -- a modal icon browser: a live search box over a
+-- scrolling grid of every icon the client knows, with a preview of the current
+-- pick and Okay/Cancel/Clear. Built once and reused -- `.Open(current)` refills
+-- and shows it, `.Close()` hides it. Only columns*visibleRows cell buttons ever
+-- exist; they are repainted as the grid scrolls, so a ~5000-icon database costs
+-- a fixed number of frames. spec:
+--   nameFrame    -- REQUIRED: global frame name for the FauxScrollFrame (its
+--                   scrollbar child is addressed by name); the dialog itself
+--                   takes "<nameFrame>Dialog"
+--   onAccept(path, name) -- the pick, as a full texture path and as the bare
+--                   uppercase basename; called with ("", nil) for Clear
+--   icons()      -- optional: the array to browse (paths or basenames), for a
+--                   caller with its own source. Defaults to the client's macro
+--                   icon database (LibWidgets.GetIconDatabase)
+--   title, searchHint, acceptText, cancelText, clearText -- captions
+--   columns (10), visibleRows (7), iconSize (30)
+--   dialogParent -- parent frame (default UIParent); pass the owning panel so
+--                   closing it takes the dialog down too
+--   strata (FULLSCREEN_DIALOG), onClose()
+--
+-- LibWidgets.GetIconDatabase() -- the client's icon list as uppercase basenames
+-- (no path, no extension), built once per session. Prefers ClassicAPI's
+-- GetMacroIcons/GetMacroItemIcons/GetLoose* enumerators and falls back to
+-- vanilla's GetNumMacroIcons/GetMacroIconInfo, which only knows Ability_*/
+-- Spell_* and lists no item icons at all.
+-- LibWidgets.IconPath(name) -- that basename back to a texture path.
+--
+-- LibWidgets.BAR_TEXTURES -- the ordered status-bar texture names a bar-texture
+-- picker offers ("Flat" and "Blizzard" first, then the bundled set). Pair with
+-- LibWidgets.BarTexturePath(dir, name) -> a texture path, where `dir` is the
+-- caller's own bars folder ("Interface\AddOns\<addon>\textures\bars\"); "Flat"
+-- (a solid fill, no grain) and "Blizzard" resolve to stock client art and ignore
+-- `dir`. Feed the list to
+-- NewDropButton's `values` and a name->path map built from it to `swatches` for a
+-- previewing texture picker. Same reasoning as `textureDir`: this file cannot
+-- discover its own path at runtime, so the art location is the caller's to supply.
+--
 -- NewListEditor(parent, spec) -- spec fields:
 --   nameFrame     -- unique string naming the internal ScrollFrame (1.12's
 --                    FauxScrollFrameTemplate needs an addressable global name
@@ -182,7 +264,8 @@
 --                    drag-drop.
 --   remove(index)              -- optional; omit to hide the delete button
 --   add = { onAdd(text) }      -- optional; builds an edit box + Add button
---                    below the list
+--                    below the list (children of the returned `frame`, so
+--                    hiding it hides them too)
 --   leadingControl             -- optional:
 --       { kind = "tristate", states = { {key=,color={r,g,b},tooltip=}, ... },
 --         get(entry) -> key, cycle(entry) }
@@ -197,14 +280,72 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 8
+local MAJOR, MINOR = "LibWidgets-1.0", 12
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
 -- so keep the return in a local and publish only when we actually won.
-local lib = LibStub:NewLibrary(MAJOR, MINOR)
+-- Registration diagnostics, captured before the call and published below for a
+-- consumer's own version report: what was already registered under this major,
+-- and how this MINOR survives each of the two pattern functions LibStub
+-- implementations use to parse it. Worth keeping because the failure they
+-- describe is silent -- a copy that loses the race and doesn't load presents as
+-- a library inexplicably missing a function, never as a version problem.
+local preMinor = LibStub.minors and LibStub.minors[MAJOR]
+local parseMatch = string.match and tonumber(string.match(MINOR, "%d+"))
+local _, _, findCapture = string.find(MINOR, "(%d+)")
+
+local lib, displaced = LibStub:NewLibrary(MAJOR, MINOR)
+local overridden = false   -- LIBWIDGETS_DEV forced this copy in
+local repaired = false     -- LibStub's verdict contradicted its own bookkeeping
+
+if not lib then
+	local existing, recordedMinor = LibStub:GetLibrary(MAJOR, true)
+	if existing then
+		-- LibStub's verdict is not trustworthy on every client. One in the wild
+		-- assigns the minor a constant before comparing, discarding what it was
+		-- handed: every major records that same constant, every registration
+		-- after the first is refused, and `minors` says nothing about what is
+		-- actually loaded. Version arbitration therefore can't be delegated to
+		-- LibStub -- each copy publishes its own version as `.MINOR` on the
+		-- shared table, and that is the number compared here. A copy predating
+		-- that field publishes nothing and is treated as older than anything,
+		-- which is correct: it is.
+		local liveMinor = existing.MINOR or recordedMinor or 0
+		if liveMinor < MINOR then
+			-- Strictly newer than what's loaded: take over. This is the normal
+			-- upgrade path, not a workaround, and it is safe to ship precisely
+			-- because it never displaces an equal or newer copy.
+			lib, displaced, repaired = existing, liveMinor, true
+			LibStub.minors[MAJOR] = MINOR
+		elseif LIBWIDGETS_DEV then
+			-- Dev override: take over even from an equal or newer copy. Needed
+			-- because addons sharing one submodule normally sit at *equal*
+			-- MINOR, where nothing above applies and edits to this checkout
+			-- appear to do nothing -- everything still working, from someone
+			-- else's copy. Don't ship with it set.
+			lib, displaced, overridden = existing, liveMinor, true
+			LibStub.minors[MAJOR] = MINOR
+		end
+	end
+end
 if not lib then return end
 LibWidgets = lib
+-- Published so a consumer can report which copy actually won (a mismatch is
+-- otherwise invisible until a missing function blows up mid-call).
+-- DEV_OVERRIDE distinguishes the two ways this copy can end up live: won the
+-- version race on its own, or only because LIBWIDGETS_DEV forced it. Without
+-- that flag recorded, the two are indistinguishable after the fact -- the
+-- override sets the registered minor to this copy's own, so the numbers look
+-- identical either way.
+LibWidgets.MINOR = MINOR
+LibWidgets.DEV_OVERRIDE = overridden
+LibWidgets.REPAIRED = repaired
+-- The minor that was registered before this copy took over (nil = none).
+LibWidgets.DISPLACED_MINOR = displaced
+LibWidgets.PRE_MINOR = preMinor
+LibWidgets.PARSE_MATCH = parseMatch
+LibWidgets.PARSE_FIND = tonumber(findCapture)
 
 local BTN_W   = 20
 local BTN_GAP = 2
@@ -269,12 +410,12 @@ end
 
 -- Reorder/delete icon button. Overrides styleFlatButton's hover so a disabled
 -- button (row 1's "up", the last row's "down") doesn't brighten on hover.
-local function iconButton(parent, icon, onClick)
+local function iconButton(parent, icon, onClick, width, height, iconSize)
 	local b = CreateFrame("Button", nil, parent)
-	b:SetWidth(BTN_W); b:SetHeight(18)
+	b:SetWidth(width or BTN_W); b:SetHeight(height or 18)
 	styleFlatButton(b)
 	local t = b:CreateTexture(nil, "ARTWORK")
-	t:SetWidth(11); t:SetHeight(11)
+	t:SetWidth(iconSize or 11); t:SetHeight(iconSize or 11)
 	t:SetPoint("CENTER", 0, 0)
 	t:SetTexture(icon)
 	b.icon = t
@@ -285,6 +426,19 @@ local function iconButton(parent, icon, onClick)
 	b:SetScript("OnClick", function() LibWidgets.CloseAllMenus(); onClick() end)
 	return b
 end
+
+-- The same small icon button the list editor's own rows use, as a public
+-- widget; see the header comment for spec. `.icon` is the texture, so a caller
+-- repainting a toggle (an expand/collapse arrow) just re-SetTextures it.
+function LibWidgets.NewIconButton(parent, spec)
+	spec = spec or {}
+	return iconButton(parent, spec.icon, spec.onClick or function() end,
+		spec.width, spec.height, spec.iconSize)
+end
+
+-- The delete-row art the list editor uses, published so a consumer's own
+-- delete affordance outside a list reads as the same control.
+LibWidgets.ICON_DELETE = ICON_DELETE
 
 -- Leading tristate chip: a colour-tinted circle swatch that cycles through
 -- leadingControl.states on click. iconPath is the caller's spec.textureDir-
@@ -463,13 +617,22 @@ function LibWidgets.NewTextBox(parent, spec)
 	return e
 end
 
--- A scrollable multi-line edit box; see the header comment for spec. The
--- UIPanelScrollFrameTemplate ScrollFrame needs a unique global name (its
--- scrollbar child is "<name>ScrollBar"), so instances are counted.
-local mleSeq = 0
+-- A scrollable multi-line edit box; see the header comment for spec.
+--
+-- Scrolled by this library's own NewScrollFrame (the slim tinted slider every
+-- other scroller here uses) rather than UIPanelScrollFrameTemplate's chunky
+-- Blizzard scrollbar, so it reads as part of the same widget set.
+--
+-- That swap brings a real fix with it. A multi-line EditBox does not size
+-- itself to its text on this client, which is why the old version pinned the
+-- child at a flat 2000px and let the template clip it -- leaving the scroll
+-- range permanently wrong. The content height is instead *measured*, with a
+-- zero-alpha FontString carrying the same font and wrap width as the edit box,
+-- so the slider's range and thumb match the text that is actually there.
+local SCROLL_PAD = 5     -- inset from the box's border to the scroll viewport
+local SLIDER_GUTTER = 10 -- room kept clear on the right for the slider
 function LibWidgets.NewMultiLineEditBox(parent, spec)
 	spec = spec or {}
-	mleSeq = mleSeq + 1
 	local w = spec.width or 300
 	local h = spec.height or 150
 
@@ -479,43 +642,130 @@ function LibWidgets.NewMultiLineEditBox(parent, spec)
 	box:SetBackdropColor(0, 0, 0, 0.7)
 	box:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
 
-	local scroll = CreateFrame("ScrollFrame", "LibWidgetsMLE" .. mleSeq .. "Scroll", box, "UIPanelScrollFrameTemplate")
-	scroll:SetPoint("TOPLEFT", box, "TOPLEFT", 5, -5)
-	-- UIPanelScrollFrameTemplate parks its scrollbar ~26px in from the right.
-	scroll:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -26, 5)
+	local edit, measure
+	local scroll = LibWidgets.NewScrollFrame(box, {
+		wheelStep = 20,
+		child = function(sf)
+			edit = CreateFrame("EditBox", nil, sf)
+			edit:SetMultiLine(true)
+			edit:SetAutoFocus(false)
+			edit:SetFontObject(GameFontHighlightSmall)
+			edit:SetTextInsets(4, 4, 4, 4)
+			return edit
+		end,
+	})
+	scroll:SetPoint("TOPLEFT", box, "TOPLEFT", SCROLL_PAD, -SCROLL_PAD)
+	scroll:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -SCROLL_PAD, SCROLL_PAD)
 
-	local edit = CreateFrame("EditBox", nil, scroll)
-	edit:SetMultiLine(true)
-	edit:SetAutoFocus(false)
-	edit:SetFontObject(GameFontHighlightSmall)
-	edit:SetTextInsets(4, 4, 4, 4)
-	edit:SetWidth(w - 5 - 26 - 8)
-	edit:SetHeight(2000) -- generously tall; the scroll frame clips/scrolls it
+	-- Parented to the box, not the scroll child, so it is never scrolled.
+	measure = box:CreateFontString(nil, "BACKGROUND")
+	measure:SetFontObject(GameFontHighlightSmall)
+	measure:SetAlpha(0)
+	measure:SetJustifyH("LEFT")
+	measure:SetPoint("TOPLEFT", box, "TOPLEFT", SCROLL_PAD, -SCROLL_PAD)
+
+	local function innerWidth() return box:GetWidth() - SCROLL_PAD * 2 - SLIDER_GUTTER end
+
+	-- Height of the measuring FontString's current text.
+	--
+	-- `GetStringHeight` does NOT exist on this client -- it is a 3.3.5 method,
+	-- and calling it errors. A FontString sizes its own region to its text, so
+	-- `GetHeight` is the reading that works here; the method check keeps a
+	-- client that does have it (or does not have either) from erroring.
+	local function measuredHeight()
+		if measure.GetStringHeight then
+			local h = measure:GetStringHeight()
+			if h and h > 0 then return h end
+		end
+		if measure.GetHeight then
+			local h = measure:GetHeight()
+			if h and h > 0 then return h end
+		end
+		return nil
+	end
+
+	-- Line count times the font's size, as a floor under the measurement above.
+	-- It cannot see wrapping, so it under-counts long lines -- it exists so a
+	-- failed measurement degrades to "scrolls a bit short" rather than to a
+	-- collapsed box.
+	local function estimatedHeight()
+		local t = edit:GetText() or ""
+		local lines, at = 1, 1
+		while true do
+			-- string.find, not the strfind upvalue: that one is declared with
+			-- the tokenizer further down this file and is not in scope here.
+			local nl = string.find(t, "\n", at, true)
+			if not nl then break end
+			lines = lines + 1
+			at = nl + 1
+		end
+		local size
+		if edit.GetFont then local _, s = edit:GetFont(); size = s end
+		return lines * ((tonumber(size) or 12) + 2)
+	end
+
+	-- Resizes the edit box to the height its text actually needs, then refits
+	-- the slider. Floored at the viewport height so clicking the empty area
+	-- below short text still lands on the edit box.
+	local function fit()
+		local iw = innerWidth()
+		edit:SetWidth(iw)
+		measure:SetWidth(iw)
+		-- A trailing newline measures short, and empty text measures zero; a
+		-- space keeps both cases from collapsing the box.
+		measure:SetText((edit:GetText() or "") .. " ")
+
+		local textH = measuredHeight()
+		local est = estimatedHeight()
+		if not textH or textH < est then textH = est end
+
+		local viewH = scroll:GetHeight() or 0
+		local target = textH + 8
+		if target < viewH then target = viewH end
+		edit:SetHeight(target)
+		scroll.Update()
+	end
+	box.fit = fit
+
 	if spec.text then edit:SetText(spec.text) end
 	edit:SetScript("OnEditFocusGained", function() LibWidgets.CloseAllMenus() end)
 	edit:SetScript("OnEscapePressed", function() this:ClearFocus() end)
 	edit:SetScript("OnTextChanged", function()
-		local sf = this:GetParent()
-		sf:UpdateScrollChildRect()
+		fit()
 		if spec.onChange then spec.onChange(this:GetText()) end
-	end)
-	scroll:SetScrollChild(edit)
-	scroll:EnableMouseWheel(true)
-	scroll:SetScript("OnMouseWheel", function()
-		local range = this:GetVerticalScrollRange()
-		local v = this:GetVerticalScroll() - arg1 * 20
-		if v < 0 then v = 0 elseif v > range then v = range end
-		this:SetVerticalScroll(v)
 	end)
 
 	box.edit = edit
-	function box.setText(t) edit:SetText(t or "") end
+	box.scroll = scroll
+	-- Refits here rather than trusting SetText to raise OnTextChanged: whether
+	-- it does is an engine detail, and a wrong scroll range is silent.
+	function box.setText(t) edit:SetText(t or ""); fit() end
 	function box.getText() return edit:GetText() end
 	function box.clearFocus() edit:ClearFocus() end
 	function box.focusSelectAll()
 		edit:SetFocus()
 		edit:HighlightText()
 	end
+	-- Resizing has to re-wrap and re-measure, so it goes through here rather
+	-- than a bare SetWidth/SetHeight on the outer frame.
+	function box.setSize(width, height)
+		box:SetWidth(width); box:SetHeight(height)
+		fit()
+	end
+	-- Keeps the measuring FontString in step: a different face or size changes
+	-- how the text wraps, and a stale measure means a wrong scroll range.
+	function box.setFont(path, size, flags)
+		local ok = edit:SetFont(path, size, flags or "")
+		if not ok then
+			edit:SetFontObject(GameFontHighlightSmall)
+			measure:SetFontObject(GameFontHighlightSmall)
+		else
+			measure:SetFont(path, size, flags or "")
+		end
+		fit()
+		return ok
+	end
+	fit()
 	return box
 end
 
@@ -613,8 +863,17 @@ function LibWidgets.NewScrollFrame(parent, spec)
 	local wheelStep = spec.wheelStep or 30
 
 	local frame = CreateFrame("ScrollFrame", nil, parent)
-	local content = CreateFrame("Frame", nil, frame)
-	content:SetWidth(1); content:SetHeight(1)
+	-- `spec.child` is a factory, not a frame: the scroll child has to be
+	-- parented to this ScrollFrame, which does not exist until here. A caller
+	-- that wants to scroll something other than a plain content frame (an edit
+	-- box, say) builds it inside the factory.
+	local content
+	if spec.child then
+		content = spec.child(frame)
+	else
+		content = CreateFrame("Frame", nil, frame)
+		content:SetWidth(1); content:SetHeight(1)
+	end
 	frame:SetScrollChild(content)
 	frame.content = content
 
@@ -669,17 +928,32 @@ end
 
 -- A value-picker drop button; see the header comment for spec.
 function LibWidgets.NewDropButton(parent, spec)
-	local values = spec.values
-	local labels = spec.labels or {}
-	local tips   = spec.tips
-	local width  = spec.width or 92
-	local itemH  = spec.itemHeight or 14
+	local values   = spec.values
+	local labels   = spec.labels or {}
+	local tips     = spec.tips
+	local swatches = spec.swatches
+	local width    = spec.width or 92
+	local itemH    = spec.itemHeight or (swatches and 20 or 14)
 
 	local b = CreateFrame("Button", nil, parent)
 	b:SetWidth(width); b:SetHeight(spec.height or 20)
 	styleFlatButton(b)
-	local fs = b:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-	fs:SetPoint("CENTER", 0, 0)
+
+	-- A swatch picker previews the candidate as a full green bar drawn in that
+	-- texture. On the face it's a StatusBar (the same widget the choice will
+	-- eventually drive), inset so the button's own border still reads.
+	local faceSwatch
+	if swatches then
+		faceSwatch = CreateFrame("StatusBar", nil, b)
+		faceSwatch:SetPoint("TOPLEFT", 3, -3); faceSwatch:SetPoint("BOTTOMRIGHT", -3, 3)
+		faceSwatch:SetMinMaxValues(0, 1); faceSwatch:SetValue(1)
+		faceSwatch:SetStatusBarColor(0.2, 0.7, 0.2)
+		b.faceSwatch = faceSwatch
+	end
+	-- The label goes on the swatch, not the button: a child frame draws above its
+	-- parent's own regions, so a label on the button would sit under the preview.
+	local fs = (faceSwatch or b):CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	fs:SetPoint("CENTER", b, "CENTER", 0, 0)
 	b.label = fs
 
 	-- A down-arrow on the right edge signals the button opens a menu. It needs
@@ -687,7 +961,9 @@ function LibWidgets.NewDropButton(parent, spec)
 	-- given. Desaturated grey at rest, green on hover -- the same enabled/disabled
 	-- cue the list editor's reorder arrows use.
 	if spec.textureDir then
-		local arrow = b:CreateTexture(nil, "OVERLAY")
+		-- Drawn on the face swatch when there is one, for the same reason the label
+		-- is: a texture on the button itself would be covered by that child frame.
+		local arrow = (faceSwatch or b):CreateTexture(nil, "OVERLAY")
 		arrow:SetWidth(9); arrow:SetHeight(9)
 		arrow:SetPoint("RIGHT", b, "RIGHT", -5, 0)
 		arrow:SetTexture(spec.textureDir .. "down")
@@ -705,6 +981,13 @@ function LibWidgets.NewDropButton(parent, spec)
 	function b.setValue(v)
 		b.value = v
 		fs:SetText(labels[v] or v or "")
+		if faceSwatch then
+			local path = v ~= nil and swatches[v] or nil
+			if path then faceSwatch:SetStatusBarTexture(path) end
+			-- SetStatusBarTexture replaces the bar's texture object, dropping the
+			-- tint set at build; re-apply it so the preview stays a green fill.
+			faceSwatch:SetStatusBarColor(0.2, 0.7, 0.2)
+		end
 	end
 
 	-- Hosted on the button's top-level ancestor (not the button) so a ScrollFrame
@@ -744,7 +1027,16 @@ function LibWidgets.NewDropButton(parent, spec)
 		item:SetPoint("RIGHT", content, "RIGHT", 0, 0)
 		item:EnableMouseWheel(true)
 		item:SetScript("OnMouseWheel", scroll.wheel)
-		local ifs = item:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+		-- A plain ARTWORK texture rather than a nested StatusBar: the entry is
+		-- always a full bar, and staying on the button's own regions keeps the
+		-- label (OVERLAY) and the auto HIGHLIGHT layering over it.
+		if swatches then
+			local sw = item:CreateTexture(nil, "ARTWORK")
+			sw:SetPoint("TOPLEFT", 1, -1); sw:SetPoint("BOTTOMRIGHT", -1, 1)
+			sw:SetVertexColor(0.2, 0.7, 0.2)
+			item.swatch = sw
+		end
+		local ifs = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		ifs:SetPoint("LEFT", item, "LEFT", 2, 0)
 		item.label = ifs
 		local hl = item:CreateTexture(nil, "HIGHLIGHT")
@@ -772,6 +1064,16 @@ function LibWidgets.NewDropButton(parent, spec)
 			local item = menuItem(i)
 			item.value = vals[i]
 			item.label:SetText(labels[vals[i]] or vals[i])
+			if item.swatch then
+				local path = swatches[vals[i]]
+				if path then
+					item.swatch:SetTexture(path)
+					item.swatch:SetVertexColor(0.2, 0.7, 0.2)
+					item.swatch:Show()
+				else
+					item.swatch:Hide()
+				end
+			end
 			item:Show()
 		end
 		for i = n + 1, table.getn(menu.items) do menu.items[i]:Hide() end
@@ -1088,7 +1390,10 @@ function LibWidgets.NewListEditor(parent, spec)
 
 	local totalH = listH
 	if spec.add then
-		local addBtn = LibWidgets.NewButton(parent, { text = "Add", width = 50, height = 22 })
+		-- Parented to listBox (not `parent`) even though it sits below it: the
+		-- add row is part of this editor, so hiding the returned `.frame` --
+		-- what a caller repainting a panel does -- must take it down too.
+		local addBtn = LibWidgets.NewButton(listBox, { text = "Add", width = 50, height = 22 })
 		addBtn:SetPoint("TOPRIGHT", listBox, "BOTTOMRIGHT", 0, -8)
 
 		-- Forward-declared so `commit` (needed as both addBox's onCommit and
@@ -1098,7 +1403,7 @@ function LibWidgets.NewListEditor(parent, spec)
 			local text = addBox:GetText()
 			if text and text ~= "" then spec.add.onAdd(text); addBox:SetText("") end
 		end
-		addBox = LibWidgets.NewTextBox(parent, { onCommit = commit })
+		addBox = LibWidgets.NewTextBox(listBox, { onCommit = commit })
 		addBox:SetPoint("TOPLEFT", listBox, "BOTTOMLEFT", 0, -8)
 		addBox:SetPoint("RIGHT", addBtn, "LEFT", -6, 0)
 		addBtn:SetScript("OnClick", commit)
@@ -1108,4 +1413,1411 @@ function LibWidgets.NewListEditor(parent, spec)
 
 	refresh()
 	return { height = totalH, refresh = refresh, frame = listBox }
+end
+
+-- ---------------------------------------------------------------------------
+-- Status bar textures
+--
+-- The names of the bar texture set addons on this client conventionally bundle
+-- (the LibSharedMedia default pack, which no 1.12 client has a media registry
+-- for). Only the names live here: the .tga files sit in the consuming addon's
+-- own textures\bars\ folder, since this file can't resolve a path relative to
+-- itself -- same constraint as NewListEditor's textureDir.
+-- ---------------------------------------------------------------------------
+
+LibWidgets.BAR_TEXTURES = {
+	"Flat", "Blizzard", "Aluminium", "BantoBar", "Gloss", "Graphite", "Healbot",
+	"Minimalist", "Otravi", "Perl", "Round", "Smooth",
+}
+
+-- Two names resolve to stock client art rather than a bundled file, so they
+-- work even for a caller shipping none of the rest:
+--   Flat     -- the solid white 8x8, i.e. no grain at all: whatever the caller
+--               tints it is exactly what shows.
+--   Blizzard -- the client's own status bar texture.
+function LibWidgets.BarTexturePath(dir, name)
+	if name == "Flat" then
+		return "Interface\\Buttons\\WHITE8X8"
+	elseif not name or name == "Blizzard" then
+		return "Interface\\TargetingFrame\\UI-StatusBar"
+	end
+	return (dir or "") .. name
+end
+
+-- ---------------------------------------------------------------------------
+-- Icon picker
+-- ---------------------------------------------------------------------------
+
+local ICON_PREFIX = "Interface\\Icons\\"
+
+-- Icons are stored as uppercase basenames (no path, no extension): it halves
+-- the string weight of a ~5000-entry DB, makes the search a plain uppercase
+-- substring test, and lets entries that differ only in case or prefix dedup
+-- against each other. Texture paths are rebuilt on demand -- WoW resolves them
+-- case-insensitively, so the uppercasing is free.
+local function iconBaseName(name)
+	local s, e = string.find(string.upper(name), "INTERFACE\\ICONS\\", 1, true)
+	if s == 1 then name = string.sub(name, e + 1) end
+	return string.upper(name)
+end
+LibWidgets.IconPath = function(name) return ICON_PREFIX .. name end
+
+-- The client's own macro-icon database. ClassicAPI surfaces modern Classic
+-- Era's four append-to-table enumerators; prefer them, because the vanilla
+-- GetMacroIconInfo DB they replace is filtered to Ability_*/Spell_* and never
+-- lists a single INV_* item icon. Scanning walks thousands of files, so the
+-- result is built once and cached for the session.
+local iconDB
+function LibWidgets.GetIconDatabase()
+	if iconDB then return iconDB end
+	iconDB = {}
+	local seen = {}
+	local function add(name)
+		if not name or name == "" then return end
+		name = iconBaseName(name)
+		if not seen[name] then
+			seen[name] = true
+			table.insert(iconDB, name)
+		end
+	end
+	if type(GetMacroIcons) == "function" and type(GetMacroItemIcons) == "function" then
+		-- Modern's canonical order (loose drop-ins before MPQ-resident, spells
+		-- before items). The four calls don't dedup against each other -- an icon
+		-- present both loose and in an MPQ is returned twice -- hence `seen`.
+		local spells, items = {}, {}
+		if type(GetLooseMacroIcons) == "function" then GetLooseMacroIcons(spells) end
+		if type(GetLooseMacroItemIcons) == "function" then GetLooseMacroItemIcons(items) end
+		GetMacroIcons(spells)
+		GetMacroItemIcons(items)
+		for i = 1, table.getn(spells) do add(spells[i]) end
+		for i = 1, table.getn(items) do add(items[i]) end
+	elseif type(GetNumMacroIcons) == "function" then
+		for i = 1, GetNumMacroIcons() do add(GetMacroIconInfo(i)) end
+	end
+	return iconDB
+end
+
+-- A modal icon browser; see the header comment for spec. Built once per caller
+-- and reused: `.Open(current)` refills and shows it, so the several thousand
+-- cell buttons a non-virtualised grid would need never get created -- only
+-- columns*visibleRows exist, repainted as the list scrolls (the same row-pool
+-- approach NewListEditor uses).
+function LibWidgets.NewIconPicker(parent, spec)
+	spec = spec or {}
+	local cols    = spec.columns or 10
+	local vis     = spec.visibleRows or 7
+	local iconSz  = spec.iconSize or 30
+	local cell    = iconSz + 6
+	local pad     = 10
+	-- Cell columns, the grid's own 4px insets, and the FauxScrollFrame
+	-- scrollbar's gutter on the right.
+	local gridW   = cols * cell + 8 + 22
+	local gridH   = vis * cell + 8
+	local scrollName = spec.nameFrame or error("NewIconPicker: spec.nameFrame is required")
+
+	local frame = CreateFrame("Frame", scrollName .. "Dialog", spec.dialogParent or UIParent)
+	frame:SetWidth(gridW + pad * 2)
+	frame:SetHeight(gridH + 118)
+	frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+	frame:SetBackdrop(WIDGET_BACKDROP)
+	frame:SetBackdropColor(0, 0, 0, 0.92)
+	frame:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.9)
+	frame:SetFrameStrata(spec.strata or "FULLSCREEN_DIALOG")
+	frame:SetToplevel(true)
+	frame:EnableMouse(true)
+	frame:SetMovable(true)
+	frame:RegisterForDrag("LeftButton")
+	frame:SetScript("OnDragStart", function() this:StartMoving() end)
+	frame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
+	-- A click on the dialog's own background is the one gap CloseAllMenus'
+	-- interaction-driven closing doesn't cover (see this file's header).
+	frame:SetScript("OnMouseDown", function() LibWidgets.CloseAllMenus() end)
+	frame:Hide()
+
+	local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	title:SetPoint("TOPLEFT", pad, -pad)
+	title:SetText(spec.title or "Select Icon")
+
+	-- Preview of what Okay would accept, so the choice is legible even when the
+	-- selected cell has scrolled out of view.
+	local preview = frame:CreateTexture(nil, "ARTWORK")
+	preview:SetWidth(26); preview:SetHeight(26)
+	preview:SetPoint("TOPLEFT", pad, -pad - 20)
+	preview:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+	local previewLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	previewLabel:SetPoint("LEFT", preview, "RIGHT", 6, 0)
+	previewLabel:SetJustifyH("LEFT")
+
+	local count = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	count:SetPoint("TOPRIGHT", -pad, -pad - 2)
+	count:SetJustifyH("RIGHT")
+
+	local filtered, selected = {}, nil
+	local refresh, applyFilter
+
+	local search = LibWidgets.NewTextBox(frame, {
+		width = 160, height = 20, hint = spec.searchHint or "Search",
+		onChange = function(text) applyFilter(text) end,
+	})
+	search:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -pad, -pad - 18)
+	search:SetScript("OnEscapePressed", function() this:SetText(""); this:ClearFocus() end)
+
+	local grid = CreateFrame("Frame", nil, frame)
+	grid:SetPoint("TOPLEFT", pad, -pad - 54)
+	grid:SetWidth(gridW); grid:SetHeight(gridH)
+	grid:SetBackdrop(WIDGET_BACKDROP)
+	grid:SetBackdropColor(0, 0, 0, 0.5)
+	grid:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+
+	local scroll = CreateFrame("ScrollFrame", scrollName, grid, "FauxScrollFrameTemplate")
+	scroll:SetPoint("TOPLEFT", grid, "TOPLEFT", 4, -4)
+	scroll:SetPoint("BOTTOMRIGHT", grid, "BOTTOMRIGHT", -22, 4)
+
+	local cells = {}
+	local function cellAt(i)
+		local c = cells[i]
+		if c then return c end
+		c = CreateFrame("Button", nil, grid)
+		c:SetWidth(cell - 2); c:SetHeight(cell - 2)
+		local col = math.mod(i - 1, cols)
+		local row = math.floor((i - 1) / cols)
+		c:SetPoint("TOPLEFT", grid, "TOPLEFT", 4 + col * cell, -4 - row * cell)
+		c:SetBackdrop(WIDGET_BACKDROP)
+		c:SetBackdropColor(0, 0, 0, 0.4)
+		c:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.6)
+		local t = c:CreateTexture(nil, "ARTWORK")
+		t:SetWidth(iconSz - 4); t:SetHeight(iconSz - 4)
+		t:SetPoint("CENTER", 0, 0)
+		t:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+		c.icon = t
+		local hl = c:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints(c); hl:SetTexture(1, 0.82, 0, 0.25)
+		c:SetScript("OnClick", function()
+			LibWidgets.CloseAllMenus()
+			if not this.name then return end
+			selected = this.name
+			refresh()
+		end)
+		c:SetScript("OnEnter", function()
+			if not this.name then return end
+			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+			GameTooltip:AddLine(this.name)
+			GameTooltip:Show()
+		end)
+		c:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		cells[i] = c
+		return c
+	end
+
+	refresh = function()
+		local n = table.getn(filtered)
+		local rows = math.ceil(n / cols)
+		FauxScrollFrame_Update(scroll, rows, vis, cell)
+		local offset = FauxScrollFrame_GetOffset(scroll)
+		for i = 1, cols * vis do
+			local c = cellAt(i)
+			local index = offset * cols + i
+			local name = filtered[index]
+			if name then
+				c.name = name
+				c.icon:SetTexture(ICON_PREFIX .. name)
+				c.icon:Show()
+				if name == selected then
+					c:SetBackdropBorderColor(1, 0.82, 0, 1)
+					c:SetBackdropColor(0.3, 0.25, 0.05, 0.8)
+				else
+					c:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.6)
+					c:SetBackdropColor(0, 0, 0, 0.4)
+				end
+				c:Show()
+			else
+				-- Kept shown but blanked: hiding trailing cells would make the
+				-- last partial row's grid stop mid-air instead of reading as an
+				-- empty slot.
+				c.name = nil
+				c.icon:Hide()
+				c:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.3)
+				c:SetBackdropColor(0, 0, 0, 0.2)
+				c:Show()
+			end
+		end
+		count:SetText(n .. (n == 1 and " icon" or " icons"))
+		if selected then
+			preview:SetTexture(ICON_PREFIX .. selected)
+			previewLabel:SetText(selected)
+		else
+			preview:SetTexture(nil)
+			previewLabel:SetText("")
+		end
+	end
+
+	scroll:SetScript("OnVerticalScroll", function()
+		FauxScrollFrame_OnVerticalScroll(cell, refresh)
+	end)
+	local function wheel()
+		local bar = getglobal(scrollName .. "ScrollBar")
+		if bar then bar:SetValue(bar:GetValue() - arg1 * cell) end
+	end
+	scroll:EnableMouseWheel(true); scroll:SetScript("OnMouseWheel", wheel)
+	grid:EnableMouseWheel(true); grid:SetScript("OnMouseWheel", wheel)
+
+	local function allIcons()
+		if spec.icons then return spec.icons() end
+		return LibWidgets.GetIconDatabase()
+	end
+
+	applyFilter = function(text)
+		local all = allIcons()
+		filtered = {}
+		if not text or text == "" then
+			for i = 1, table.getn(all) do filtered[i] = iconBaseName(all[i]) end
+		else
+			local needle = string.upper(text)
+			for i = 1, table.getn(all) do
+				local name = iconBaseName(all[i])
+				if string.find(name, needle, 1, true) then table.insert(filtered, name) end
+			end
+		end
+		local bar = getglobal(scrollName .. "ScrollBar")
+		if bar then bar:SetValue(0) end
+		refresh()
+	end
+
+	-- Scrolls the selection into view; called on open so reopening the dialog
+	-- lands on the icon already in use rather than back at the top.
+	local function scrollToSelected()
+		if not selected then return end
+		for i = 1, table.getn(filtered) do
+			if filtered[i] == selected then
+				local row = math.floor((i - 1) / cols)
+				local bar = getglobal(scrollName .. "ScrollBar")
+				if bar then
+					local target = (row - math.floor(vis / 2)) * cell
+					local lo, hi = bar:GetMinMaxValues()
+					if target < lo then target = lo elseif target > hi then target = hi end
+					bar:SetValue(target)
+				end
+				return
+			end
+		end
+	end
+
+	local cancel = LibWidgets.NewButton(frame, {
+		text = spec.cancelText or "Cancel", width = 90,
+		onClick = function() frame.Close() end,
+	})
+	cancel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -pad, pad)
+
+	local accept = LibWidgets.NewButton(frame, {
+		text = spec.acceptText or "Okay", width = 90,
+		onClick = function()
+			local pick = selected
+			frame.Close()
+			if pick and spec.onAccept then spec.onAccept(ICON_PREFIX .. pick, pick) end
+		end,
+	})
+	accept:SetPoint("RIGHT", cancel, "LEFT", -6, 0)
+
+	local clear = LibWidgets.NewButton(frame, {
+		text = spec.clearText or "Clear", width = 90,
+		onClick = function()
+			frame.Close()
+			if spec.onAccept then spec.onAccept("", nil) end
+		end,
+	})
+	clear:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", pad, pad)
+
+	function frame.Open(current)
+		selected = current and current ~= "" and iconBaseName(current) or nil
+		search:SetText("")
+		applyFilter("")
+		scrollToSelected()
+		refresh()
+		frame:Show()
+	end
+
+	function frame.Close()
+		LibWidgets.CloseAllMenus()
+		search:ClearFocus()
+		frame:Hide()
+		if spec.onClose then spec.onClose() end
+	end
+
+	frame:SetScript("OnHide", function() LibWidgets.CloseAllMenus() end)
+
+	-- Escape closes, the same as any Blizzard dialog.
+	if UISpecialFrames then table.insert(UISpecialFrames, scrollName .. "Dialog") end
+
+	return frame
+end
+
+-- A syntax-coloured Lua code editor; see the header comment for spec. Built by
+-- decorating NewMultiLineEditBox rather than rebuilding one.
+--
+-- Colouring happens on blur, never while typing. That is a deliberate limit,
+-- not a stopgap: the plain code lives in a private upvalue and the edit box
+-- holds the display form, so a focused box contains exactly what the user
+-- typed and the caret can never land inside a colour escape.
+--
+-- The error line and the reset button belong to the widget because both have
+-- to sit relative to the box and share its lifetime. What stays with the
+-- consumer is the *policy*: `validate` decides what counts as an error (only
+-- the consumer knows what wrapper the code is compiled behind) and `default`
+-- supplies the reset content.
+function LibWidgets.NewCodeEditBox(parent, spec)
+	spec = spec or {}
+	local w = spec.width or 300
+	local h = spec.height or 150
+	local colors = spec.colors or LibWidgets.DEFAULT_LUA_COLORS
+
+	local box = LibWidgets.NewMultiLineEditBox(parent, { width = w, height = h })
+	local edit = box.edit
+
+	-- Colouring roughly triples the buffer; at the default cap the engine would
+	-- silently truncate the user's code the moment it is coloured.
+	edit:SetMaxBytes(0)
+	edit:SetMaxLetters(0)
+
+	-- Font is settable after construction, not baked in: a pooled box gets
+	-- rebound to whatever the consumer's current setting is on every paint.
+	-- box.setFont falls back to GameFontHighlightSmall when the file is missing
+	-- (SetFont returns falsy) rather than leaving an invisible edit box.
+	local fontPath = spec.font and spec.font.path
+	local fontSize = (spec.font and spec.font.size) or 12
+	local fontFlags = (spec.font and spec.font.flags) or ""
+	local baseSetFont = box.setFont
+	if fontPath then baseSetFont(fontPath, fontSize, fontFlags) end
+
+	function box.setFontSize(size)
+		if not size or size == fontSize then return end
+		fontSize = size
+		if fontPath then baseSetFont(fontPath, fontSize, fontFlags) end
+	end
+	function box.getFontSize() return fontSize end
+	function box.setFont(path, size, flags)
+		fontPath, fontSize, fontFlags = path, size or fontSize, flags or fontFlags
+		return baseSetFont(fontPath, fontSize, fontFlags)
+	end
+
+	-- The plain, decoded source. The edit box's own text is private: it is
+	-- either the encoded-plain form (focused) or the coloured form (blurred).
+	local code = ""
+	local suppress = false
+	-- Tracked rather than read back with HasFocus: the focus state is only ever
+	-- changed by the two handlers below, and this needs no API beyond them.
+	local focused = false
+
+	local errText = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	errText:SetJustifyH("LEFT")
+	errText:SetTextColor(1, 0.35, 0.35)
+	errText:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 2, -3)
+	box.errText = errText
+
+	local function runValidate()
+		if not spec.validate then return end
+		errText:SetText(spec.validate(code) or "")
+	end
+
+	-- Live colouring: off unless the consumer asks for it. When on, the box
+	-- holds coloured text even while focused, so the caret has to be saved and
+	-- restored around every recolour (see the caret block below).
+	local live = spec.live and true or false
+	local dirty, lastColored
+
+	local function showPlain()
+		suppress = true
+		edit:SetText(LibWidgets.LuaEncode(code))
+		box.fit()
+		suppress = false
+		lastColored = nil
+	end
+
+	local function showColored()
+		suppress = true
+		local t = LibWidgets.LuaColorize(LibWidgets.LuaEncode(code), colors)
+		edit:SetText(t)
+		box.fit()
+		suppress = false
+		lastColored = t
+	end
+
+	-- Which form the box should be showing right now.
+	local function refresh()
+		if live or not focused then showColored() else showPlain() end
+	end
+
+	edit:SetScript("OnEditFocusGained", function()
+		LibWidgets.CloseAllMenus()
+		focused = true
+		refresh()
+	end)
+
+	edit:SetScript("OnTextChanged", function()
+		-- This handler replaces the base widget's, so it owns the refit too --
+		-- and it has to run even when suppressed, because colouring changes how
+		-- the text wraps and therefore how tall the box needs to be.
+		box.fit()
+		if suppress then return end
+		code = LibWidgets.LuaDecode(this:GetText())
+		runValidate()
+		if live then dirty = GetTime() end
+		if spec.onChange then spec.onChange(code) end
+	end)
+
+	edit:SetScript("OnEditFocusLost", function()
+		focused = false
+		dirty = nil
+		if spec.onCommit then spec.onCommit(code) end
+		showColored()
+	end)
+
+	-- -----------------------------------------------------------------------
+	-- Caret save/restore, for live colouring only.
+	--
+	-- This client has no GetCursorPosition/SetCursorPosition, so the caret is
+	-- read by inserting a byte the text cannot contain and finding it, and
+	-- written by inserting a throwaway character at the target and selecting it
+	-- away. Both are confirmed working here: \1 survives a GetText round-trip,
+	-- and HighlightText/Insert index in raw bytes (escapes counted), which is
+	-- what the offsets below assume.
+	--
+	-- OnTextSet is nil'd across each critical section so a handler cannot
+	-- re-enter this while the text is in a half-written state.
+	local CARET_SENTINEL = "\1"
+
+	local function criticalEnter()
+		local script = edit:GetScript("OnTextSet")
+		if script then edit:SetScript("OnTextSet", nil) end
+		return script
+	end
+
+	local function criticalLeave(script)
+		if script then edit:SetScript("OnTextSet", script) end
+	end
+
+	local function setCaretPos(pos)
+		local text = edit:GetText() or ""
+		if string.len(text) == 0 then return end
+		suppress = true
+		edit:SetText(string.sub(text, 1, pos) .. "a" .. string.sub(text, pos + 1))
+		edit:HighlightText(pos, pos + 1)
+		edit:Insert("\0")
+		suppress = false
+	end
+
+	local function getCaretPos()
+		local script = criticalEnter()
+		local text = edit:GetText() or ""
+		suppress = true
+		edit:Insert(CARET_SENTINEL)
+		local pos = string.find(edit:GetText() or "", CARET_SENTINEL, 1, true)
+		edit:SetText(text)
+		suppress = false
+		-- SetText drops the caret to the end, so put it back where it was.
+		if pos then setCaretPos(pos - 1) end
+		criticalLeave(script)
+		return (pos or 1) - 1
+	end
+
+	-- Recolours in place, keeping the caret where the user left it. Throttled
+	-- by the OnUpdate below rather than run per keystroke: the tokenizer walks
+	-- the whole buffer, and a caret round-trip costs three SetTexts.
+	local function recolorLive()
+		local orgCode = edit:GetText() or ""
+		if orgCode == lastColored then return end
+
+		local pos = getCaretPos()
+		local plain, plainPos = LibWidgets.LuaStripColorsWithPos(orgCode, pos)
+
+		-- Bracket matching rides on this pass, which is why it needs live mode:
+		-- it depends on knowing where the caret is, and the caret only exists
+		-- while the box is focused. LuaMatchBracket takes a 0-based offset,
+		-- plainPos is 1-based.
+		local highlight
+		if spec.matchBrackets ~= false then
+			local a, b = LibWidgets.LuaMatchBracket(plain, plainPos - 1)
+			if a then highlight = { [a] = true, [b] = true } end
+		end
+
+		local newCode, newPos = LibWidgets.LuaColorize(plain, colors, plainPos, highlight)
+		-- Contains a runaway colour from an unterminated string, which would
+		-- otherwise bleed over everything after it.
+		newCode = LibWidgets.LuaPadWithLinebreaks(newCode)
+		lastColored = newCode
+
+		if orgCode == newCode then return end
+		local script = criticalEnter()
+		suppress = true
+		edit:SetText(newCode)
+		suppress = false
+		if newPos then
+			if newPos < 0 then newPos = 0 end
+			local maxPos = string.len(newCode)
+			if newPos > maxPos then newPos = maxPos end
+			setCaretPos(newPos)
+		end
+		criticalLeave(script)
+	end
+
+	box:SetScript("OnUpdate", function()
+		if not dirty then return end
+		if GetTime() - dirty < 0.2 then return end
+		dirty = nil
+		recolorLive()
+	end)
+
+	-- Tab re-indents the whole buffer. Unlike live colouring this is safe to
+	-- ship on by default: it is a discrete action the user asked for, so a
+	-- caret hiccup is something they can see and undo by retyping, not a
+	-- per-keystroke defect. Colours are only re-applied when the box is
+	-- currently showing them.
+	local tabWidth = spec.tabWidth or 2
+
+	local function indentNow()
+		local orgCode = edit:GetText() or ""
+		if orgCode == "" then return end
+
+		local pos = getCaretPos()
+		local plain, plainPos = LibWidgets.LuaStripColorsWithPos(orgCode, pos)
+		local newCode, newPos = LibWidgets.LuaIndent(plain, tabWidth, live and colors or nil, plainPos)
+		if live then newCode = LibWidgets.LuaPadWithLinebreaks(newCode) end
+		if newCode == orgCode then return end
+
+		local script = criticalEnter()
+		suppress = true
+		edit:SetText(newCode)
+		suppress = false
+		code = LibWidgets.LuaDecode(newCode)
+		lastColored = live and newCode or nil
+		if newPos then
+			if newPos < 0 then newPos = 0 end
+			local maxPos = string.len(newCode)
+			if newPos > maxPos then newPos = maxPos end
+			setCaretPos(newPos)
+		end
+		criticalLeave(script)
+
+		runValidate()
+		if spec.onChange then spec.onChange(code) end
+	end
+
+	edit:SetScript("OnTabPressed", function() indentNow() end)
+	box.indent = indentNow
+	function box.setTabWidth(n) tabWidth = n end
+	function box.getTabWidth() return tabWidth end
+
+	-- Reset is two-click confirm, the same as any other irreversible action
+	-- here: it discards whatever the user wrote, and this client has no undo.
+	-- Always built, shown only while a default is bound, so a pooling consumer
+	-- can rebind one instance between fields that do and don't have one.
+	local reset = LibWidgets.NewButton(box, { text = "Reset", width = 60, height = 18 })
+	reset:SetPoint("BOTTOMRIGHT", box, "TOPRIGHT", -2, 2)
+	box.resetButton = reset
+
+	local function disarm()
+		reset.armed = nil
+		reset.setText("Reset")
+		reset:SetBackdropColor(0, 0, 0, 0.7)
+		reset:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+	end
+	reset.disarm = disarm
+
+	reset:SetScript("OnClick", function()
+		LibWidgets.CloseAllMenus()
+		if spec.default == nil then return end
+		if reset.armed then
+			disarm()
+			box.setText(type(spec.default) == "function" and spec.default() or spec.default)
+			if spec.onCommit then spec.onCommit(code) end
+			if spec.onChange then spec.onChange(code) end
+		else
+			reset.armed = true
+			reset.setText("Sure?")
+			reset:SetBackdropColor(0.65, 0.06, 0.06, 1)
+			reset:SetBackdropBorderColor(1, 0.3, 0.3, 1)
+			if C_Timer then
+				C_Timer.After(3, function() if reset.armed then disarm() end end)
+			end
+		end
+	end)
+	disarm()
+
+	-- Mirrors NewMultiLineEditBox's surface so a pooling consumer can treat the
+	-- two nearly identically.
+	function box.setText(t)
+		code = t or ""
+		dirty = nil
+		refresh()
+		runValidate()
+	end
+
+	-- Toggling live mode repaints into the other form immediately, so a
+	-- consumer flipping the setting doesn't leave a half-coloured box behind.
+	function box.setLive(on)
+		local want = on and true or false
+		if want == live then return end
+		live = want
+		dirty = nil
+		refresh()
+	end
+	function box.isLive() return live end
+	function box.getText() return code end
+	function box.clearFocus() edit:ClearFocus() end
+
+
+	-- Re-runs the validator against the current code without touching the text.
+	-- A pooling consumer needs this: it seeds the box before binding the new
+	-- field's validator, so the error line is a beat behind until this runs.
+	box.revalidate = runValidate
+
+	function box.setValidate(fn) spec.validate = fn; runValidate() end
+	function box.setHandlers(onChange, onCommit) spec.onChange = onChange; spec.onCommit = onCommit end
+
+	-- nil hides Reset entirely; the button is never destroyed, only parked.
+	function box.setDefault(d)
+		spec.default = d
+		disarm()
+		if d == nil then reset:Hide() else reset:Show() end
+	end
+
+	box.setDefault(spec.default)
+	box.setText(spec.text or "")
+	return box
+end
+
+-- ---------------------------------------------------------------------------
+-- Lua source tokenizer + syntax colouring
+--
+-- Ported from "For All Indents And Purposes" by Kristofer Karlsson
+-- (kristofer.karlsson@gmail.com).
+--
+-- Pure string -> string: no frames, no per-edit-box state, so a consumer can
+-- colour a buffer with no widget involved (and so this half is testable off
+-- the client, which the rest of this file is not).
+--
+-- Two encodings live here and must never be confused:
+--   1. Pipe doubling -- a literal "|" in user code has to reach the engine as
+--      "||" or the engine reads it as the start of an escape.
+--   2. Colour wrapping -- "|cAARRGGBB" .. token .. "|r" around each token.
+-- The order is fixed: writing is Colorize(Encode(code)), reading is
+-- Decode(text), which undoes the colours and the doubling in that order.
+-- ---------------------------------------------------------------------------
+
+local strbyte, strsub, strlen, strfind, strgsub = string.byte, string.sub, string.len, string.find, string.gsub
+
+local T = {
+	TOKEN_UNKNOWN = 0, TOKEN_NUMBER = 1, TOKEN_LINEBREAK = 2,
+	TOKEN_WHITESPACE = 3, TOKEN_IDENTIFIER = 4, TOKEN_ASSIGNMENT = 5,
+	TOKEN_EQUALITY = 6, TOKEN_MINUS = 7, TOKEN_COMMENT_SHORT = 8,
+	TOKEN_COMMENT_LONG = 9, TOKEN_STRING = 10, TOKEN_LEFTBRACKET = 11,
+	TOKEN_PERIOD = 12, TOKEN_DOUBLEPERIOD = 13, TOKEN_TRIPLEPERIOD = 14,
+	TOKEN_LTE = 15, TOKEN_LT = 16, TOKEN_GTE = 17, TOKEN_GT = 18,
+	TOKEN_NOTEQUAL = 19, TOKEN_COMMA = 20, TOKEN_SEMICOLON = 21,
+	TOKEN_COLON = 22, TOKEN_LEFTPAREN = 23, TOKEN_RIGHTPAREN = 24,
+	TOKEN_PLUS = 25, TOKEN_SLASH = 27, TOKEN_LEFTWING = 28,
+	TOKEN_RIGHTWING = 29, TOKEN_CIRCUMFLEX = 30, TOKEN_ASTERISK = 31,
+	TOKEN_RIGHTBRACKET = 32, TOKEN_KEYWORD = 33, TOKEN_SPECIAL = 34,
+	TOKEN_VERTICAL = 35, TOKEN_TILDE = 36,
+	-- WoW colour escapes, so the tokenizer can skip over its own output.
+	TOKEN_COLORCODE_START = 37, TOKEN_COLORCODE_STOP = 38,
+}
+LibWidgets.LuaTokens = T
+
+local B = {}
+local function byteOf(c) B[c] = strbyte(c); return B[c] end
+local BYTE_LF, BYTE_CR = byteOf("\n"), byteOf("\r")
+local BYTE_SQUOTE, BYTE_DQUOTE = byteOf("'"), byteOf('"')
+local BYTE_0, BYTE_9 = byteOf("0"), byteOf("9")
+local BYTE_PERIOD, BYTE_SPACE, BYTE_TAB = byteOf("."), byteOf(" "), byteOf("\t")
+local BYTE_E, BYTE_e, BYTE_MINUS = byteOf("E"), byteOf("e"), byteOf("-")
+local BYTE_EQUALS, BYTE_LBRACKET, BYTE_RBRACKET = byteOf("="), byteOf("["), byteOf("]")
+local BYTE_BACKSLASH, BYTE_LT, BYTE_GT = byteOf("\\"), byteOf("<"), byteOf(">")
+local BYTE_TILDE, BYTE_VERTICAL = byteOf("~"), byteOf("|")
+local BYTE_r, BYTE_c = byteOf("r"), byteOf("c")
+
+local linebreakChars = {}
+linebreakChars[BYTE_LF] = 1
+linebreakChars[BYTE_CR] = 1
+
+local whitespaceChars = {}
+whitespaceChars[BYTE_SPACE] = 1
+whitespaceChars[BYTE_TAB] = 1
+
+-- -1 means "needs a closer look in nextToken"; anything else is the token type
+-- that single character produces outright.
+local specialChars = {}
+specialChars[BYTE_PERIOD] = -1
+specialChars[BYTE_LT] = -1
+specialChars[BYTE_GT] = -1
+specialChars[BYTE_LBRACKET] = -1
+specialChars[BYTE_EQUALS] = -1
+specialChars[BYTE_MINUS] = -1
+specialChars[BYTE_SQUOTE] = -1
+specialChars[BYTE_DQUOTE] = -1
+specialChars[BYTE_TILDE] = -1
+specialChars[BYTE_VERTICAL] = -1
+specialChars[BYTE_RBRACKET] = T.TOKEN_RIGHTBRACKET
+specialChars[byteOf(",")] = T.TOKEN_COMMA
+specialChars[byteOf(":")] = T.TOKEN_COLON
+specialChars[byteOf(";")] = T.TOKEN_SEMICOLON
+specialChars[byteOf("(")] = T.TOKEN_LEFTPAREN
+specialChars[byteOf(")")] = T.TOKEN_RIGHTPAREN
+specialChars[byteOf("+")] = T.TOKEN_PLUS
+specialChars[byteOf("/")] = T.TOKEN_SLASH
+specialChars[byteOf("{")] = T.TOKEN_LEFTWING
+specialChars[byteOf("}")] = T.TOKEN_RIGHTWING
+specialChars[byteOf("^")] = T.TOKEN_CIRCUMFLEX
+specialChars[byteOf("*")] = T.TOKEN_ASTERISK
+-- `#` and `%` are not operators in 5.0, so they get no token type of their own
+-- -- but they still have to *bound* a token, or "a%b" lexes as one identifier.
+specialChars[byteOf("#")] = T.TOKEN_SPECIAL
+specialChars[byteOf("%")] = T.TOKEN_SPECIAL
+
+local function nextNumberExponentPartInt(text, pos)
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte then return T.TOKEN_NUMBER, pos end
+		if byte >= BYTE_0 and byte <= BYTE_9 then
+			pos = pos + 1
+		else
+			return T.TOKEN_NUMBER, pos
+		end
+	end
+end
+
+local function nextNumberExponentPart(text, pos)
+	local byte = strbyte(text, pos)
+	if not byte then return T.TOKEN_NUMBER, pos end
+	if byte == BYTE_MINUS then
+		-- "1.2e-- a comment": the exponent's sign turns out to be a comment
+		-- start, so "1.2e" ends the number here.
+		byte = strbyte(text, pos + 1)
+		if byte == BYTE_MINUS then return T.TOKEN_NUMBER, pos end
+		return nextNumberExponentPartInt(text, pos + 1)
+	end
+	return nextNumberExponentPartInt(text, pos)
+end
+
+local function nextNumberFractionPart(text, pos)
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte then return T.TOKEN_NUMBER, pos end
+		if byte >= BYTE_0 and byte <= BYTE_9 then
+			pos = pos + 1
+		elseif byte == BYTE_E or byte == BYTE_e then
+			return nextNumberExponentPart(text, pos + 1)
+		else
+			return T.TOKEN_NUMBER, pos
+		end
+	end
+end
+
+local function nextNumberIntPart(text, pos)
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte then return T.TOKEN_NUMBER, pos end
+		if byte >= BYTE_0 and byte <= BYTE_9 then
+			pos = pos + 1
+		elseif byte == BYTE_PERIOD then
+			return nextNumberFractionPart(text, pos + 1)
+		elseif byte == BYTE_E or byte == BYTE_e then
+			return nextNumberExponentPart(text, pos + 1)
+		else
+			return T.TOKEN_NUMBER, pos
+		end
+	end
+end
+
+local function nextIdentifier(text, pos)
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte or linebreakChars[byte] or whitespaceChars[byte] or specialChars[byte] then
+			return T.TOKEN_IDENTIFIER, pos
+		end
+		pos = pos + 1
+	end
+end
+
+-- false, or: true, position after the opening bracket, number of "=" in it.
+local function isBracketStringNext(text, pos)
+	local byte = strbyte(text, pos)
+	if byte ~= BYTE_LBRACKET then return false end
+	local pos2 = pos + 1
+	byte = strbyte(text, pos2)
+	while byte == BYTE_EQUALS do
+		pos2 = pos2 + 1
+		byte = strbyte(text, pos2)
+	end
+	if byte == BYTE_LBRACKET then
+		return true, pos2 + 1, (pos2 - 1) - pos
+	end
+	return false
+end
+
+-- The "[==[" is already consumed; find the matching close of the same level.
+local function nextBracketString(text, pos, equalsCount)
+	local state = 0
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte then return T.TOKEN_STRING, pos end
+		if byte == BYTE_RBRACKET then
+			if state == 0 then
+				state = 1
+			elseif state == equalsCount + 1 then
+				return T.TOKEN_STRING, pos + 1
+			else
+				state = 0
+			end
+		elseif byte == BYTE_EQUALS then
+			if state > 0 then state = state + 1 end
+		else
+			state = 0
+		end
+		pos = pos + 1
+	end
+end
+
+-- The "--" is already consumed.
+local function nextComment(text, pos)
+	local isBracketString, nextPos, equalsCount = isBracketStringNext(text, pos)
+	if isBracketString then
+		local _, nextPos2 = nextBracketString(text, nextPos, equalsCount)
+		return T.TOKEN_COMMENT_LONG, nextPos2
+	end
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte or linebreakChars[byte] then return T.TOKEN_COMMENT_SHORT, pos end
+		pos = pos + 1
+	end
+end
+
+local function nextString(text, pos, character)
+	local even = true
+	while true do
+		local byte = strbyte(text, pos)
+		if not byte then return T.TOKEN_STRING, pos end
+		if byte == character and even then return T.TOKEN_STRING, pos + 1 end
+		if byte == BYTE_BACKSLASH then even = not even else even = true end
+		pos = pos + 1
+	end
+end
+
+-- Returns the token type and the position one past the token's last character,
+-- or nil once `pos` is past the end of `text`.
+local function nextToken(text, pos)
+	local byte = strbyte(text, pos)
+	if not byte then return nil end
+
+	if linebreakChars[byte] then return T.TOKEN_LINEBREAK, pos + 1 end
+
+	if whitespaceChars[byte] then
+		while true do
+			pos = pos + 1
+			byte = strbyte(text, pos)
+			if not byte or not whitespaceChars[byte] then return T.TOKEN_WHITESPACE, pos end
+		end
+	end
+
+	local token = specialChars[byte]
+	if token then
+		if token ~= -1 then return token, pos + 1 end
+
+		-- A colour escape this function's own output may contain: skipped as
+		-- one token so re-colouring already-coloured text is idempotent.
+		if byte == BYTE_VERTICAL then
+			byte = strbyte(text, pos + 1)
+			if byte == BYTE_VERTICAL then return T.TOKEN_VERTICAL, pos + 2 end
+			if byte == BYTE_c then return T.TOKEN_COLORCODE_START, pos + 10 end
+			if byte == BYTE_r then return T.TOKEN_COLORCODE_STOP, pos + 2 end
+			return T.TOKEN_UNKNOWN, pos + 1
+		end
+
+		if byte == BYTE_MINUS then
+			byte = strbyte(text, pos + 1)
+			if byte == BYTE_MINUS then return nextComment(text, pos + 2) end
+			return T.TOKEN_MINUS, pos + 1
+		end
+
+		if byte == BYTE_SQUOTE then return nextString(text, pos + 1, BYTE_SQUOTE) end
+		if byte == BYTE_DQUOTE then return nextString(text, pos + 1, BYTE_DQUOTE) end
+
+		if byte == BYTE_LBRACKET then
+			local isBracketString, nextPos, equalsCount = isBracketStringNext(text, pos)
+			if isBracketString then return nextBracketString(text, nextPos, equalsCount) end
+			return T.TOKEN_LEFTBRACKET, pos + 1
+		end
+
+		if byte == BYTE_EQUALS then
+			if strbyte(text, pos + 1) == BYTE_EQUALS then return T.TOKEN_EQUALITY, pos + 2 end
+			return T.TOKEN_ASSIGNMENT, pos + 1
+		end
+
+		if byte == BYTE_PERIOD then
+			byte = strbyte(text, pos + 1)
+			if not byte then return T.TOKEN_PERIOD, pos + 1 end
+			if byte == BYTE_PERIOD then
+				if strbyte(text, pos + 2) == BYTE_PERIOD then return T.TOKEN_TRIPLEPERIOD, pos + 3 end
+				return T.TOKEN_DOUBLEPERIOD, pos + 2
+			elseif byte >= BYTE_0 and byte <= BYTE_9 then
+				return nextNumberFractionPart(text, pos + 2)
+			end
+			return T.TOKEN_PERIOD, pos + 1
+		end
+
+		if byte == BYTE_LT then
+			if strbyte(text, pos + 1) == BYTE_EQUALS then return T.TOKEN_LTE, pos + 2 end
+			return T.TOKEN_LT, pos + 1
+		end
+
+		if byte == BYTE_GT then
+			if strbyte(text, pos + 1) == BYTE_EQUALS then return T.TOKEN_GTE, pos + 2 end
+			return T.TOKEN_GT, pos + 1
+		end
+
+		if byte == BYTE_TILDE then
+			if strbyte(text, pos + 1) == BYTE_EQUALS then return T.TOKEN_NOTEQUAL, pos + 2 end
+			return T.TOKEN_TILDE, pos + 1
+		end
+
+		return T.TOKEN_UNKNOWN, pos + 1
+	elseif byte >= BYTE_0 and byte <= BYTE_9 then
+		return nextNumberIntPart(text, pos + 1)
+	else
+		return nextIdentifier(text, pos + 1)
+	end
+end
+LibWidgets.LuaNextToken = nextToken
+
+-- Each keyword maps to {before, after}: how it shifts the indent level of the
+-- line it appears on, and of the lines after it. Truthiness alone is what the
+-- colouriser needs; the pair is what LuaIndent needs.
+local noIndentEffect = { 0, 0 }
+local indentLeft = { -1, 0 }
+local indentRight = { 0, 1 }
+local indentBoth = { -1, 1 }
+
+local luaKeywords = {}
+LibWidgets.LuaKeywords = luaKeywords
+do
+	local plain = { "and", "break", "false", "for", "if", "in", "local", "nil",
+		"not", "or", "return", "true", "while" }
+	for i = 1, table.getn(plain) do luaKeywords[plain[i]] = noIndentEffect end
+	luaKeywords["until"] = indentLeft
+	luaKeywords["elseif"] = indentLeft
+	luaKeywords["end"] = indentLeft
+	luaKeywords["do"] = indentRight
+	luaKeywords["then"] = indentRight
+	luaKeywords["repeat"] = indentRight
+	luaKeywords["function"] = indentRight
+	luaKeywords["else"] = indentBoth
+end
+
+local tokenIndentation = {}
+LibWidgets.LuaTokenIndentation = tokenIndentation
+tokenIndentation[T.TOKEN_LEFTPAREN] = indentRight
+tokenIndentation[T.TOKEN_LEFTBRACKET] = indentRight
+tokenIndentation[T.TOKEN_LEFTWING] = indentRight
+tokenIndentation[T.TOKEN_RIGHTPAREN] = indentLeft
+tokenIndentation[T.TOKEN_RIGHTBRACKET] = indentLeft
+tokenIndentation[T.TOKEN_RIGHTWING] = indentLeft
+
+-- Alpha is "ff", not upstream's "00": a fully transparent alpha is ignored by
+-- the retail text engine but is not worth relying on here.
+local DEFAULT_LUA_COLORS = {}
+LibWidgets.DEFAULT_LUA_COLORS = DEFAULT_LUA_COLORS
+do
+	local C = DEFAULT_LUA_COLORS
+	C[T.TOKEN_SPECIAL] = "|cffff99ff"
+	C[T.TOKEN_KEYWORD] = "|cff6666ff"
+	C[T.TOKEN_COMMENT_SHORT] = "|cff999999"
+	C[T.TOKEN_COMMENT_LONG] = "|cff999999"
+	local stringColor = "|cffffff77"
+	C[T.TOKEN_STRING] = stringColor
+	C[".."] = stringColor
+	local tableColor = "|cffff9900"
+	C["..."] = tableColor
+	C["{"] = tableColor; C["}"] = tableColor; C["["] = tableColor; C["]"] = tableColor
+	local arithmeticColor = "|cff33ff55"
+	C[T.TOKEN_NUMBER] = arithmeticColor
+	C["+"] = arithmeticColor; C["-"] = arithmeticColor
+	C["/"] = arithmeticColor; C["*"] = arithmeticColor
+	local logicColor1 = "|cff55ff88"
+	C["=="] = logicColor1; C["<"] = logicColor1; C["<="] = logicColor1
+	C[">"] = logicColor1; C[">="] = logicColor1; C["~="] = logicColor1
+	local logicColor2 = "|cff88ffbb"
+	C["and"] = logicColor2; C["or"] = logicColor2; C["not"] = logicColor2
+	-- The matched bracket pair under the caret. White, because every other
+	-- colour here is already spoken for and the point is that it stands out.
+	C.match = "|cffffffff"
+	-- Key 0 is the "stop colour"; its absence disables colouring entirely.
+	C[0] = "|r"
+end
+
+-- Reused across calls to keep a tokenizer pass from generating a table per
+-- token. Safe because nothing here is re-entrant: LuaColorize never calls
+-- LuaStripColors and vice versa.
+local workingTable = {}
+local workingTable2 = {}
+local function tableclear(t)
+	for k in next, t do t[k] = nil end
+end
+
+-- Wraps every token in its colour. Returns the coloured string, the caret
+-- position translated into it (when `caretPosition` is given), and the line
+-- count. Pure: no widget is touched.
+-- `highlight`, when given, is a set of 1-based token start positions to paint
+-- in colorTable.match instead of their usual colour -- how bracket matching is
+-- drawn (see LuaMatchBracket).
+function LibWidgets.LuaColorize(code, colorTable, caretPosition, highlight)
+	colorTable = colorTable or DEFAULT_LUA_COLORS
+	local stopColor = colorTable[0]
+	if not stopColor then return code, caretPosition end
+	local stopColorLen = strlen(stopColor)
+
+	tableclear(workingTable)
+	local tsize, totalLen, numLines = 0, 0, 0
+	local newCaretPosition
+	local prevTokenWasColored, prevTokenWidth = false, 0
+	local pos = 1
+
+	while true do
+		if caretPosition and not newCaretPosition and pos >= caretPosition then
+			newCaretPosition = totalLen
+			if pos ~= caretPosition then
+				local diff = pos - caretPosition
+				if diff > prevTokenWidth then diff = prevTokenWidth end
+				if prevTokenWasColored then diff = diff + stopColorLen end
+				newCaretPosition = newCaretPosition - diff
+			end
+		end
+
+		prevTokenWasColored, prevTokenWidth = false, 0
+
+		local tokenType, nextPos = nextToken(code, pos)
+		if not tokenType then break end
+
+		if tokenType == T.TOKEN_COLORCODE_START or tokenType == T.TOKEN_COLORCODE_STOP
+			or tokenType == T.TOKEN_UNKNOWN then
+			-- Drop colour codes already in the text rather than colouring them.
+		elseif tokenType == T.TOKEN_LINEBREAK or tokenType == T.TOKEN_WHITESPACE then
+			if tokenType == T.TOKEN_LINEBREAK then numLines = numLines + 1 end
+			local str = strsub(code, pos, nextPos - 1)
+			prevTokenWidth = nextPos - pos
+			tsize = tsize + 1
+			workingTable[tsize] = str
+			totalLen = totalLen + strlen(str)
+		else
+			local str = strsub(code, pos, nextPos - 1)
+			prevTokenWidth = nextPos - pos
+			if luaKeywords[str] then tokenType = T.TOKEN_KEYWORD end
+
+			-- Exact-text colours win over per-token-type ones, which is how
+			-- "and"/"or"/"not" get their own colour despite being keywords.
+			-- A highlighted position outranks both.
+			local color
+			if highlight and highlight[pos] then color = colorTable.match end
+			if not color then
+				color = colorTable[str] or colorTable[tokenType] or colorTable[T.TOKEN_SPECIAL]
+			end
+
+			if color then
+				tsize = tsize + 1; workingTable[tsize] = color
+				tsize = tsize + 1; workingTable[tsize] = str
+				tsize = tsize + 1; workingTable[tsize] = stopColor
+				totalLen = totalLen + strlen(color) + (nextPos - pos) + stopColorLen
+				prevTokenWasColored = true
+			else
+				tsize = tsize + 1; workingTable[tsize] = str
+				totalLen = totalLen + strlen(str)
+			end
+		end
+
+		pos = nextPos
+	end
+	return table.concat(workingTable), newCaretPosition, numLines
+end
+
+-- Bracket pairing. Runs over the token stream, not the raw bytes, so a bracket
+-- inside a string or a comment is correctly not a bracket.
+local bracketCloser = {}
+bracketCloser[T.TOKEN_LEFTPAREN] = T.TOKEN_RIGHTPAREN
+bracketCloser[T.TOKEN_LEFTBRACKET] = T.TOKEN_RIGHTBRACKET
+bracketCloser[T.TOKEN_LEFTWING] = T.TOKEN_RIGHTWING
+local bracketOpener = {}
+for open, close in pairs(bracketCloser) do bracketOpener[close] = open end
+
+-- Given a caret as a 0-based byte offset, returns the 1-based positions of the
+-- bracket next to it and of its partner, or nil when the caret isn't beside a
+-- matched bracket. A bracket counts as "beside" the caret on either side, which
+-- is what every editor does and what makes the affordance feel right when you
+-- have just typed a closer.
+function LibWidgets.LuaMatchBracket(code, pos)
+	local stack, sn, matched = {}, 0, {}
+	local p = 1
+	while true do
+		local tt, np = nextToken(code, p)
+		if not tt then break end
+		if bracketCloser[tt] then
+			sn = sn + 1
+			stack[sn] = { tt = tt, at = p }
+		elseif bracketOpener[tt] then
+			-- Only pair like with like; a mismatched closer stays unmatched
+			-- rather than swallowing an opener of another kind.
+			if sn > 0 and stack[sn].tt == bracketOpener[tt] then
+				matched[stack[sn].at] = p
+				matched[p] = stack[sn].at
+				sn = sn - 1
+			end
+		end
+		p = np
+	end
+	-- Brackets are one byte, so the one left of the caret starts at `pos` and
+	-- the one right of it starts at `pos + 1`.
+	local at
+	if matched[pos] then at = pos elseif matched[pos + 1] then at = pos + 1 end
+	if not at then return nil end
+	return at, matched[at]
+end
+
+-- Re-indents whole lines and colours in one pass (colouring is skipped when
+-- `colorTable` is nil, which is what an uncoloured box wants). `tabWidth` is a
+-- number of spaces per level; pass `false` for hard tabs. Returns the new code
+-- and the translated caret position.
+--
+-- Two buffers: `workingTable` is the finished output, `workingTable2` holds the
+-- current line until its indent level is known -- the level can still move
+-- while the line is being read (an "end" pulls its own line left), so a line
+-- can't be emitted until its last token is in.
+function LibWidgets.LuaIndent(code, tabWidth, colorTable, caretPosition)
+	if tabWidth == nil then tabWidth = 2 end
+	local function fill(level)
+		if tabWidth == false then return string.rep("\t", level) end
+		return string.rep(" ", level * tabWidth)
+	end
+
+	tableclear(workingTable)
+	tableclear(workingTable2)
+	local tsize, totalLen = 0, 0
+	local tsize2, totalLen2 = 0, 0
+
+	local stopColor = colorTable and colorTable[0]
+	local stopColorLen = stopColor and strlen(stopColor) or 0
+
+	local newCaretPosition, newCaretPositionFinalized
+	local prevTokenWasColored, prevTokenWidth = false, 0
+
+	local pos, level = 1, 0
+	local hitNonWhitespace, hitIndentRight = false, false
+	local preIndent, postIndent = 0, 0
+
+	while true do
+		if caretPosition and not newCaretPosition and pos >= caretPosition then
+			newCaretPosition = totalLen + totalLen2
+			if pos ~= caretPosition then
+				local diff = pos - caretPosition
+				if diff > prevTokenWidth then diff = prevTokenWidth end
+				if prevTokenWasColored then diff = diff + stopColorLen end
+				newCaretPosition = newCaretPosition - diff
+			end
+		end
+
+		prevTokenWasColored, prevTokenWidth = false, 0
+
+		local tokenType, nextPos = nextToken(code, pos)
+
+		if not tokenType or tokenType == T.TOKEN_LINEBREAK then
+			-- End of a line: its indent is finally known, so emit the padding
+			-- and then the line that was buffered behind it.
+			level = level + preIndent
+			if level < 0 then level = 0 end
+
+			local s = fill(level)
+			tsize = tsize + 1
+			workingTable[tsize] = s
+			totalLen = totalLen + strlen(s)
+
+			if newCaretPosition and not newCaretPositionFinalized then
+				newCaretPosition = newCaretPosition + strlen(s)
+				newCaretPositionFinalized = true
+			end
+
+			-- Indexed, not `next`: this appends to an ordered output buffer and
+			-- `next` does not promise array order.
+			for i = 1, tsize2 do
+				tsize = tsize + 1
+				workingTable[tsize] = workingTable2[i]
+				totalLen = totalLen + strlen(workingTable2[i])
+			end
+
+			if not tokenType then break end
+
+			tsize = tsize + 1
+			workingTable[tsize] = strsub(code, pos, nextPos - 1)
+			totalLen = totalLen + nextPos - pos
+
+			level = level + postIndent
+			if level < 0 then level = 0 end
+
+			tableclear(workingTable2)
+			tsize2, totalLen2 = 0, 0
+			hitNonWhitespace, hitIndentRight = false, false
+			preIndent, postIndent = 0, 0
+		elseif tokenType == T.TOKEN_WHITESPACE then
+			-- Leading whitespace is dropped -- that's the re-indent. Whitespace
+			-- after the first real token is the user's own spacing, so it stays.
+			if hitNonWhitespace then
+				prevTokenWidth = nextPos - pos
+				local s = strsub(code, pos, nextPos - 1)
+				tsize2 = tsize2 + 1
+				workingTable2[tsize2] = s
+				totalLen2 = totalLen2 + strlen(s)
+			end
+		elseif tokenType == T.TOKEN_COLORCODE_START or tokenType == T.TOKEN_COLORCODE_STOP
+			or tokenType == T.TOKEN_UNKNOWN then
+			-- Dropped; re-coloured below if a colour table is in play.
+		else
+			hitNonWhitespace = true
+			local str = strsub(code, pos, nextPos - 1)
+			prevTokenWidth = nextPos - pos
+
+			local indentTable
+			if tokenType == T.TOKEN_IDENTIFIER then
+				indentTable = luaKeywords[str]
+			else
+				indentTable = tokenIndentation[tokenType]
+			end
+			if indentTable then
+				-- Once something has opened a block on this line, anything else
+				-- on it can only affect the lines *after* it -- otherwise
+				-- "function() return {" would pull its own line left again.
+				if hitIndentRight then
+					postIndent = postIndent + indentTable[1] + indentTable[2]
+				else
+					if indentTable[2] > 0 then hitIndentRight = true end
+					preIndent = preIndent + indentTable[1]
+					postIndent = postIndent + indentTable[2]
+				end
+			end
+
+			if luaKeywords[str] then tokenType = T.TOKEN_KEYWORD end
+
+			local color
+			if stopColor then
+				color = colorTable[str] or colorTable[tokenType] or colorTable[T.TOKEN_SPECIAL]
+			end
+
+			if color then
+				tsize2 = tsize2 + 1; workingTable2[tsize2] = color
+				tsize2 = tsize2 + 1; workingTable2[tsize2] = str
+				tsize2 = tsize2 + 1; workingTable2[tsize2] = stopColor
+				totalLen2 = totalLen2 + strlen(color) + (nextPos - pos) + stopColorLen
+				prevTokenWasColored = true
+			else
+				tsize2 = tsize2 + 1; workingTable2[tsize2] = str
+				totalLen2 = totalLen2 + (nextPos - pos)
+			end
+		end
+
+		pos = nextPos
+	end
+	return table.concat(workingTable), newCaretPosition
+end
+
+-- Removes every "|cAARRGGBB" / "|r" escape, leaving literal "||" alone.
+function LibWidgets.LuaStripColors(code)
+	-- An unterminated string makes a colour run to the end of the buffer, and
+	-- the trailing "|r\n\n" it leaves behind would otherwise accumulate a pair
+	-- of blank lines on every pass. See LuaPadWithLinebreaks, which adds them.
+	code = strgsub(code, "|r\n\n$", "|r")
+
+	tableclear(workingTable)
+	local tsize = 0
+	local pos = 1
+	local prevVertical, even, selectionStart = false, true, 1
+
+	while true do
+		local byte = strbyte(code, pos)
+		if not byte then break end
+		if byte == BYTE_VERTICAL then
+			even = not even
+			prevVertical = true
+		else
+			if prevVertical and not even then
+				if byte == BYTE_c then
+					if pos - 2 >= selectionStart then
+						tsize = tsize + 1
+						workingTable[tsize] = strsub(code, selectionStart, pos - 2)
+					end
+					pos = pos + 8
+					selectionStart = pos + 1
+				elseif byte == BYTE_r then
+					if pos - 2 >= selectionStart then
+						tsize = tsize + 1
+						workingTable[tsize] = strsub(code, selectionStart, pos - 2)
+					end
+					selectionStart = pos + 1
+				end
+			end
+			prevVertical = false
+			even = true
+		end
+		pos = pos + 1
+	end
+	if pos >= selectionStart then
+		tsize = tsize + 1
+		workingTable[tsize] = strsub(code, selectionStart, pos - 1)
+	end
+	return table.concat(workingTable)
+end
+
+-- Strips colours while carrying a caret offset through the change: a marker
+-- byte rides along at `pos` so the position can be found again afterwards
+-- rather than recomputed. \2 is used here because \1 is the caret sentinel a
+-- consumer may already have in flight.
+--
+-- The bases differ on purpose, and the chain depends on it: `pos` in is a
+-- 0-based offset (what the caret read produces), the returned position is
+-- 1-based (what LuaColorize's `caretPosition` expects), and LuaColorize hands
+-- back a 0-based offset again for the caret write. Don't "fix" one end.
+function LibWidgets.LuaStripColorsWithPos(code, pos)
+	code = strsub(code, 1, pos) .. "\2" .. strsub(code, pos + 1)
+	code = LibWidgets.LuaStripColors(code)
+	local at = strfind(code, "\2", 1, true)
+	if not at then return code, pos end
+	return strsub(code, 1, at - 1) .. strsub(code, at + 1), at
+end
+
+-- Doubles literal pipes so the engine renders them instead of reading them as
+-- an escape. Always the *first* step on the way into an edit box.
+function LibWidgets.LuaEncode(code)
+	if not code then return "" end
+	return (strgsub(code, "|", "||"))
+end
+
+-- Undoes both the colouring and the pipe doubling, in that order -- the whole
+-- read path out of an edit box.
+function LibWidgets.LuaDecode(code)
+	if not code then return "" end
+	return (strgsub(LibWidgets.LuaStripColors(code), "||", "|"))
+end
+
+-- Returns the code with up to two trailing linebreaks added, plus whether it
+-- changed. An unterminated string swallows the rest of the buffer when
+-- coloured; the trailing blank lines give that runaway colour somewhere to end
+-- that isn't the user's last line.
+function LibWidgets.LuaPadWithLinebreaks(code)
+	local len = strlen(code)
+	local linebreakcount = 0
+	while len > 0 and linebreakcount < 2 do
+		local b = strbyte(code, len)
+		if b == BYTE_LF then
+			linebreakcount = linebreakcount + 1
+		elseif not whitespaceChars[b] then
+			break
+		end
+		len = len - 1
+	end
+	if linebreakcount == 0 then return code .. "\n\n", true end
+	if linebreakcount == 1 then return code .. "\n", true end
+	return code, false
 end

@@ -3,10 +3,15 @@
 ## What this is
 
 A small, addon-agnostic UI widget library for 1.12 WoW addons. It currently
-houses nine widgets:
+houses eleven widgets:
 
 - `NewButton` — a flat, tooltip-backdrop-styled action button (text label,
   press-nudge feedback).
+- `NewIconButton` — the same button styling with a texture face instead of a
+  label; the list editor's own reorder/delete buttons are these, published so a
+  consumer can build the same control outside a list (a section header's
+  collapse arrow or delete affordance). `LibWidgets.ICON_DELETE` is the delete
+  art it uses.
 - `NewCheckBox` — a standalone `UICheckButtonTemplate` checkbox with a
   right-hand label and a `.setChecked(on)` resync method (the leading-control
   checkbox inside `NewListEditor` is a separate, row-bound thing).
@@ -18,9 +23,16 @@ houses nine widgets:
   committing on Enter. Optional `onChange` (live per-keystroke callback) and
   `hint` (greyed placeholder shown while empty) fields cover live-filter/search
   boxes without a separate widget.
-- `NewMultiLineEditBox` — a scrollable multi-line edit box (a
-  `UIPanelScrollFrameTemplate` wrapping a `SetMultiLine` `EditBox`) with the same
-  tooltip-style backdrop, for paste-in/copy-out blobs (import/export).
+- `NewMultiLineEditBox` — a scrollable multi-line edit box with the same
+  tooltip-style backdrop, for paste-in/copy-out blobs (import/export) and as the
+  base of `NewCodeEditBox`. Scrolled by this library's own `NewScrollFrame`, not
+  `UIPanelScrollFrameTemplate`, so it matches every other scroller here. A
+  multi-line `EditBox` does **not** size itself to its text on this client, so
+  the content height is measured with a zero-alpha `FontString` carrying the
+  same font and wrap width — without that the scroll range is meaningless (the
+  old version pinned the child at a flat 2000px). Anything that changes the
+  text, the size or the font must therefore go through `setText`/`setSize`/
+  `setFont` rather than the raw frame methods, or the range goes stale.
 - `NewScrollFrame` — a chrome-free vertical content scroller: a plain
   `ScrollFrame` (no Blizzard scroll template) with a slim tinted right-edge
   slider and mouse wheel. The caller fills its `.content` scroll child, sets that
@@ -36,18 +48,65 @@ houses nine widgets:
   (an anchor point, a mode, a profile name). With `spec.textureDir` it draws a
   right-edge down-arrow (grey at rest, green on hover) as a menu affordance. A
   long popup caps at `spec.maxVisibleItems` (default 8) rows and scrolls the
-  rest via a `NewScrollFrame`, so it reads like a short menu.
+  rest via a `NewScrollFrame`, so it reads like a short menu. `spec.swatches`
+  (value -> texture path) turns it into a *preview* picker: the face and every
+  menu row draw that texture as a filled green bar, so a status-bar texture is
+  picked by how it looks rather than by its name. `LibWidgets.BAR_TEXTURES` +
+  `LibWidgets.BarTexturePath(dir, name)` are the bar-texture set to feed it
+  (names here, `.tga` files in the consumer — see "no self-path introspection"
+  below; "Blizzard" resolves to the client's own art and needs no file).
+- `NewIconPicker` — a modal icon browser: a live search box over a scrolling
+  grid of every icon the client knows, a preview of the current pick, and
+  Okay/Cancel/Clear. Built once and reused via `.Open(current)`/`.Close()`.
+  Only `columns * visibleRows` cell buttons ever exist — they are repainted as
+  the grid scrolls — so a ~5000-icon database costs a fixed ~230 frames rather
+  than one button per icon.
 - `NewListEditor` — a bordered `FauxScrollFrame`-backed row pool with an
   optional leading tristate/checkbox control, a colour-able name label,
   optional trailing per-column widgets, reorder (arrows + full
   drag-to-reorder with a ghost row, insertion indicator and cursor-edge
   auto-scroll), and an optional add row built from `NewButton` + `NewTextBox`
   (so the add row shares the same flat-button/edit-box look as everything
-  else instead of a separately hand-rolled pair).
+  else instead of a separately hand-rolled pair). The add row is parented to
+  the editor's own outer frame, not to the caller's parent, so a consumer that
+  repaints a panel by hiding the returned `frame` takes the add row down with
+  it rather than stranding an orphaned edit box + button on the page.
+
+- `NewCodeEditBox` — `NewMultiLineEditBox` decorated into a syntax-coloured Lua
+  editor. Colouring happens **on blur, never while typing**: the plain code
+  lives in a private upvalue and the edit box holds the display form, so a
+  focused box contains exactly what the user typed and the caret can never
+  land inside a colour escape. Carries its own red error line under the box
+  (driven by a caller-supplied `validate`) and, when given `spec.default`, a
+  two-click-confirm Reset button above it. The button is always built and
+  merely hidden without a default, so a pooling consumer can rebind one
+  instance across fields that do and don't have one. **Tab re-indents** the
+  whole buffer (`spec.tabWidth`, or `false` for hard tabs). Font face and size
+  are settable after construction (`setFont`/`setFontSize`), so a pooled box
+  picks up a changed setting on repaint instead of needing a rebuild. Optional
+  `spec.live` colours per keystroke instead of on blur, which needs the caret
+  saved and restored around each pass — it is off unless asked for, and
+  **bracket matching rides on it**: the matched pair under the caret is painted
+  in `colorTable.match`, and there is no caret to match against unless the box
+  is focused and colouring live.
 
 Further widgets are expected to join it under the same library name over time.
 
-None of the nine have any knowledge of a particular addon's data model —
+One non-widget group also lives here, at the bottom of the file: a **Lua source
+tokenizer** and the syntax-colouring helpers built on it — `LuaColorize`,
+`LuaIndent`, `LuaEncode`/`LuaDecode`, `LuaStripColors`/`LuaStripColorsWithPos`,
+`LuaPadWithLinebreaks`, `LuaMatchBracket`, plus `LuaNextToken`/`LuaTokens`/
+`LuaKeywords`/`DEFAULT_LUA_COLORS`. Ported from *For All Indents And Purposes*
+(Kristofer Karlsson). They are here because the code edit box
+that consumes them is library code, not because they are generally useful:
+the rule this library follows is **it owns what its own widgets call**. A
+consumer's own validation policy (which wrapper the code is compiled behind,
+what counts as an error) stays in the consumer.
+
+They are pure `string -> string` and touch no frame, which makes them the one
+part of this library testable off the client.
+
+None of the ten have any knowledge of a particular addon's data model —
 every caller-specific behavior (what a button does, a slider's range/label,
 a text box's commit, a drop button's values, a list editor's backing
 array/reorder/paint) comes through the `spec` table (or plain args, for the
@@ -139,6 +198,32 @@ shared code. (References to [LibStub](../LibStub/LibStub.lua) are the
 exception: it's a real runtime dependency of this file, not incidental
 context, so citing it is describing the code, not its history.)
 
+## Where the icon list comes from
+
+`NewIconPicker` defaults to `LibWidgets.GetIconDatabase()`, which prefers the
+four append-to-table enumerators a patched client can surface —
+`GetLooseMacroIcons` / `GetLooseMacroItemIcons` / `GetMacroIcons` /
+`GetMacroItemIcons`, called in that order — and falls back to vanilla's
+`GetNumMacroIcons` / `GetMacroIconInfo`.
+
+The fallback is genuinely worse, not merely older: the vanilla engine's icon DB
+is filtered to `Ability_*` / `Spell_*`, so `GetMacroIconInfo` never returns a
+single `INV_*` item icon even though thousands exist. The four-function surface
+captures them before that filter. Prefer it whenever it's there.
+
+Two normalisation duties fall on this library rather than the caller. The four
+calls do **not** dedup against each other — an icon present both as a loose
+drop-in and inside an MPQ comes back twice — and the fallback returns full
+paths where the modern calls return bare basenames. Everything is therefore
+stored as an **uppercase basename**: it dedups case and prefix variants
+together, keeps a ~5000-entry table light, and makes the search a plain
+uppercase substring test. `LibWidgets.IconPath(name)` rebuilds the path, which
+is safe because WoW resolves texture paths case-insensitively.
+
+The scan walks thousands of files, so the result is built once per session on
+first use. A caller with its own source passes `spec.icons` and skips all of
+this.
+
 ## Client constraints that shaped this design
 
 - **`SetFrameLevel` doesn't carry children on this client.** On modern WoW,
@@ -197,6 +282,46 @@ regardless), so the only good reason to split later is human readability, not
 architecture.
 
 ## Multi-addon coexistence
+
+### LibStub cannot be trusted to arbitrate
+
+On at least one 1.12 client this library is used on, `LibStub:NewLibrary` does
+not honour version numbers at all: its body assigns the minor a hardcoded
+constant before comparing, discarding what the caller passed. Every major
+therefore records the same number, and every registration after the first is
+refused — a strictly newer copy included. The observable signature is every
+library in `LibStub.minors` reading back as the same small value while the
+libraries themselves declare 3, 6, 8, 44. Whichever copy registers first owns
+the global for the session, forever.
+
+Because of that, **this library does its own version arbitration** and treats
+LibStub as a place to park the shared table, not as an authority. Every copy
+publishes its own version as `LibWidgets.MINOR` on that shared table; a copy
+that `NewLibrary` rejects compares its own `MINOR` against the *live* copy's
+published one and takes over when it is strictly newer. A copy predating that
+field publishes nothing and is correctly treated as older than anything.
+
+This is the normal upgrade path, not a workaround for a broken client: it is
+safe everywhere because it never displaces an equal or newer copy, and on a
+healthy LibStub it simply never fires.
+
+### The development hazard version-picking creates
+
+Picking a winner by version means the copy that runs is not necessarily the
+copy being edited. A consumer developing this library sees its edits silently
+do nothing — everything keeps working, from someone else's checkout — until it
+calls a function only its own copy defines, which then fails as
+`attempt to call field 'X' (a nil value)` somewhere far from the version
+mismatch that caused it. Raising MINOR fixes it only until another consumer
+raises theirs.
+
+`LIBWIDGETS_DEV`, set by the consumer before this file loads, makes this copy
+register even when an equal-or-newer one already did. It is a development aid
+and displaces whatever the other consumers were using, so it must not ship
+enabled. `LibWidgets.MINOR` is published so a consumer can report which copy
+actually won instead of discovering it through a nil call.
+
+### How coexistence works
 
 `LibWidgets = LibStub:NewLibrary("LibWidgets-1.0", MINOR)` at the top of the
 file, guarded by `if not LibWidgets then return end`, is what makes it safe
