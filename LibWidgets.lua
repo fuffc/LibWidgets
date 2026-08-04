@@ -282,7 +282,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 13
+local MAJOR, MINOR = "LibWidgets-1.0", 14
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
@@ -860,6 +860,49 @@ end
 -- A bare content scroller; see the header comment for spec. The caller anchors
 -- the returned ScrollFrame, fills `.content` and sets its height, then calls
 -- `.Update()` so the slim right-edge slider re-fits.
+-- NewScrollBar(parent, spec) -- the slim tinted vertical slider this library
+-- scrolls everything with: no track, no arrow buttons, a thumb sized to the
+-- visible fraction. Pinned down the parent's right edge (`spec.inset` nudges it
+-- across) and hidden while there is nothing to scroll.
+--
+-- Split out of NewScrollFrame so a caller that scrolls by its own units -- a
+-- virtualised list stepping whole rows rather than pixels -- gets the same bar
+-- instead of a lookalike. `bar.Fit(range, track, fraction)` is the shared
+-- sizing: range is the largest value the bar may take, `fraction` is how much of
+-- the whole is on screen (0..1), and `track` is the bar's own pixel length --
+-- passed in rather than read back, because this client answers GetHeight with 0
+-- for a frame that has never been shown and with the *previous* size for one
+-- whose anchor target was just resized.
+function LibWidgets.NewScrollBar(parent, spec)
+	spec = spec or {}
+	local bar = CreateFrame("Slider", nil, parent)
+	bar:SetOrientation("VERTICAL")
+	bar:SetWidth(6)
+	bar:SetPoint("TOPRIGHT", parent, "TOPRIGHT", spec.inset or 0, 0)
+	bar:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", spec.inset or 0, 0)
+	bar:SetThumbTexture(WIDGET_BACKDROP.bgFile)   -- recoloured solid below
+	bar.thumb = bar:GetThumbTexture()
+	bar.thumb:SetTexture(0.5, 0.5, 0.5, 0.9)
+	bar.thumb:SetWidth(6)
+	bar:Hide()
+
+	function bar.Fit(range, track, fraction)
+		if range < 0 then range = 0 end
+		bar:SetMinMaxValues(0, range)
+		if range > 0 and track > 0 then
+			-- Thumb sized to the visible fraction, floored so it stays grabbable.
+			local th = math.floor(track * (fraction or 1))
+			bar.thumb:SetHeight(th < 16 and 16 or th)
+			bar:Show()
+		else
+			bar:SetValue(0)
+			bar:Hide()
+		end
+	end
+
+	return bar
+end
+
 function LibWidgets.NewScrollFrame(parent, spec)
 	spec = spec or {}
 	local wheelStep = spec.wheelStep or 30
@@ -879,19 +922,8 @@ function LibWidgets.NewScrollFrame(parent, spec)
 	frame:SetScrollChild(content)
 	frame.content = content
 
-	-- Slim tinted slider, no track/arrow chrome. A normal (non-scroll) child of
-	-- the ScrollFrame, so it isn't scrolled or clipped with the content.
-	local slider = CreateFrame("Slider", nil, frame)
-	slider:SetOrientation("VERTICAL")
-	slider:SetWidth(6)
-	slider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", spec.sliderInset or 0, 0)
-	slider:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", spec.sliderInset or 0, 0)
-	slider:SetThumbTexture(WIDGET_BACKDROP.bgFile)   -- recoloured solid below
-	slider.thumb = slider:GetThumbTexture()
-	slider.thumb:SetTexture(0.5, 0.5, 0.5, 0.9)
-	slider.thumb:SetWidth(6)
+	local slider = LibWidgets.NewScrollBar(frame, { inset = spec.sliderInset })
 	slider:SetScript("OnValueChanged", function() frame:SetVerticalScroll(this:GetValue()) end)
-	slider:Hide()
 	frame.slider = slider
 
 	-- Refit the slider to the current content vs viewport height. Call after
@@ -906,18 +938,10 @@ function LibWidgets.NewScrollFrame(parent, spec)
 	-- screen, or hidden when it is needed.
 	function frame.Update(viewH)
 		local view = viewH or frame:GetHeight()
-		local range = content:GetHeight() - view
-		if range < 0 then range = 0 end
-		slider:SetMinMaxValues(0, range)
-		if range > 0 and view > 0 then
-			-- Thumb sized to the visible fraction, floored so it stays grabbable.
-			local th = math.floor(view * view / content:GetHeight())
-			slider.thumb:SetHeight(th < 16 and 16 or th)
-			slider:Show()
-		else
-			slider:SetValue(0)
-			slider:Hide()
-		end
+		local total = content:GetHeight()
+		-- The bar runs the frame's full height, so the viewport height is also
+		-- the track length.
+		slider.Fit(total - view, view, total > 0 and view / total or 1)
 	end
 
 	-- arg1 is +1 up / -1 down. Exposed as `.wheel` so children that capture the
