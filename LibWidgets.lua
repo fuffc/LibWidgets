@@ -1,8 +1,9 @@
 -- LibWidgets -- a small, addon-agnostic UI widget library for 1.12 WoW
--- addons. Currently houses eleven widgets: NewButton (a flat action button),
+-- addons. Currently houses twelve widgets: NewButton (a flat action button),
 -- NewIconButton (a small texture-faced button),
 -- NewCheckBox (a labelled checkbox), NewColorSwatch (a ColorPickerFrame swatch),
--- NewSlider (a value-carrying OptionsSliderTemplate slider), NewTextBox (a
+-- NewSlider (a value-carrying OptionsSliderTemplate slider), NewSpinBox (a
+-- drag/type/step number control), NewTextBox (a
 -- tooltip-backdrop-styled edit box), NewMultiLineEditBox (a scrollable
 -- multi-line edit box on this library's own slim slider, sized to its text),
 -- NewScrollFrame (a chrome-free content scroller), NewDropButton (a
@@ -141,6 +142,34 @@
 -- Returns the slider with a `.setValue(v)` method: sets the value and repaints the
 -- title (and the edit box, if any) without firing onChange, for resyncing the
 -- widget from external state.
+--
+-- NewSpinBox(parent, spec) -- a number control that can be dragged, typed into or
+-- stepped: a caption above a filled track, the value centred inside the track as
+-- an edit box, and a step button just outside each end of it. Drag for coarse,
+-- type for exact, step for fine, in one control the width of the row -- a plain
+-- slider can only be dragged, which cannot reach a specific number across a wide
+-- range. spec:
+--   label         -- caption above the track
+--   min, max, step, width (default 150)
+--   textureDir    -- absolute path to this library's textures\ (see the
+--                    no-self-path note below); the two step buttons are the
+--                    shared `up` arrow given a quarter turn each
+--   onChange(v)   -- called on a user drag, a step, and a committed typed value;
+--                    never on `.setValue` or the `get` seed, and never for an
+--                    edit that lands on the value already shown
+--   fmt(v)        -- optional: -> the text shown in the box (defaults to the
+--                    number rounded to `decimals` places). A format the box
+--                    cannot parse back makes it read-only in practice, since a
+--                    typed value that fails tonumber reverts.
+--   decimals      -- max decimal places in the default box text (default 2)
+--   get()         -- optional: seeds the initial value through `.setValue`
+-- Typing commits on Enter and on focus loss, reverts on Escape, and snaps and
+-- clamps to min/max/step -- so the box can never hold a value the slider half of
+-- the control could not have produced. Returns the frame with `.setValue(v)`
+-- (resync without firing onChange), `.getValue()`, `.setWidth(w)` (the whole
+-- control, buttons included -- the track takes what is left), `.edit` (the edit
+-- box, for a pooling consumer that must clear focus before rebinding), `.label`
+-- and `.stepDown`/`.stepUp`.
 --
 -- NewScrollFrame(parent, spec) -- a chrome-free vertical content scroller: a plain
 -- ScrollFrame (no Blizzard scroll template) with a slim tinted right-edge slider
@@ -282,7 +311,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 14
+local MAJOR, MINOR = "LibWidgets-1.0", 15
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
@@ -842,6 +871,237 @@ function LibWidgets.NewSlider(parent, spec)
 	end
 	if spec.get then s.setValue(spec.get()) end
 	return s
+end
+
+local SPIN_BTN_W    = 16   -- step button edge
+local SPIN_GAP      = 2    -- step button <-> track
+local SPIN_TRACK_H  = 18
+local SPIN_LABEL_H  = 14
+local SPIN_INSET    = 3    -- WIDGET_BACKDROP's own border inset
+local SPIN_HANDLE_W = 9    -- grab area at the fill's leading edge
+local SPIN_GRIP_W   = 3    -- the visible line inside it
+
+-- The two step buttons are the library's one `up` arrow turned a quarter turn
+-- each, so a consumer ships one arrow file rather than four. SetTexCoord takes
+-- its corners in UL, LL, UR, LR order; these map the source's right edge onto
+-- the screen's top edge (and its left edge onto the top, respectively), which is
+-- a 90-degree turn each way.
+local SPIN_ARROW_LEFT  = { 1, 0, 0, 0, 1, 1, 0, 1 }
+local SPIN_ARROW_RIGHT = { 0, 1, 1, 1, 0, 0, 1, 0 }
+
+local SPIN_GRIP_IDLE   = { 0.85, 0.75, 0.2, 0.8 }
+local SPIN_GRIP_ACTIVE = { 1, 0.95, 0.5, 1 }
+
+-- A drag/type/step number control; see the header comment for spec.
+function LibWidgets.NewSpinBox(parent, spec)
+	spec = spec or {}
+	local value = spec.min or 0
+	local focused, escaping, dragging = false, false, false
+	local dragStartX, dragStartValue
+
+	local f = CreateFrame("Frame", nil, parent)
+	f:SetHeight(SPIN_LABEL_H + SPIN_TRACK_H)
+
+	local label = f:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+	label:SetJustifyH("LEFT")
+	label:SetHeight(SPIN_LABEL_H)
+	label:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0)
+	f.label = label
+
+	-- Read out of `spec` on every use rather than captured, so a consumer pooling
+	-- one instance across fields rebinds by assigning to the spec table it passed
+	-- in (the same contract NewSlider's onChange/format follow).
+	local function bounds()
+		local lo, hi = spec.min or 0, spec.max or 1
+		if hi < lo then hi = lo end
+		return lo, hi, spec.step or 1
+	end
+
+	-- To the nearest step within [min, max]. Everything that can set the value --
+	-- drag, step, typed entry, the external resync -- goes through this, so the
+	-- box can never show a number a drag could not have produced.
+	local function snap(v)
+		v = tonumber(v)
+		if v == nil then return value end
+		local lo, hi, step = bounds()
+		if step and step > 0 then v = lo + math.floor((v - lo) / step + 0.5) * step end
+		if v < lo then v = lo elseif v > hi then v = hi end
+		return v
+	end
+
+	local paint, setValue
+
+	local function nudge(dir)
+		local _, _, step = bounds()
+		setValue(value + dir * (step or 1), true)
+	end
+
+	local arrow = (spec.textureDir or "") .. "up"
+	local left = iconButton(f, arrow, function() nudge(-1) end, SPIN_BTN_W, SPIN_TRACK_H, 8)
+	local right = iconButton(f, arrow, function() nudge(1) end, SPIN_BTN_W, SPIN_TRACK_H, 8)
+	left.icon:SetTexCoord(unpack(SPIN_ARROW_LEFT))
+	right.icon:SetTexCoord(unpack(SPIN_ARROW_RIGHT))
+	left:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -SPIN_LABEL_H)
+	right:SetPoint("TOPRIGHT", f, "TOPRIGHT", 0, -SPIN_LABEL_H)
+
+	local track = CreateFrame("Frame", nil, f)
+	track:SetHeight(SPIN_TRACK_H)
+	track:SetPoint("TOPLEFT", left, "TOPRIGHT", SPIN_GAP, 0)
+	track:SetBackdrop(WIDGET_BACKDROP)
+	track:SetBackdropColor(0, 0, 0, 0.7)
+	track:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+
+	local fill = track:CreateTexture(nil, "ARTWORK")
+	fill:SetTexture(0.20, 0.42, 0.65, 0.85)
+	fill:SetPoint("TOPLEFT", track, "TOPLEFT", SPIN_INSET, -SPIN_INSET)
+	fill:SetPoint("BOTTOMLEFT", track, "BOTTOMLEFT", SPIN_INSET, SPIN_INSET)
+
+	local edit = CreateFrame("EditBox", nil, track)
+	edit:SetPoint("TOPLEFT", track, "TOPLEFT", SPIN_INSET, -SPIN_INSET)
+	edit:SetPoint("BOTTOMRIGHT", track, "BOTTOMRIGHT", -SPIN_INSET, SPIN_INSET)
+	edit:SetAutoFocus(false)
+	edit:SetFontObject(GameFontHighlightSmall)
+	edit:SetJustifyH("CENTER")
+	edit:SetTextInsets(2, 2, 0, 0)
+	f.edit = edit
+
+	-- The drag target rides the fill's leading edge, above the edit box, and is
+	-- always visible: it doubles as the read-out of where the value sits, and a
+	-- handle that only appears on hover would have to be driven by enter/leave
+	-- pairs that interleave (the edit box covers the track, this covers the edit
+	-- box) or by polling MouseIsOver every frame.
+	local handle = CreateFrame("Frame", nil, track)
+	handle:SetWidth(SPIN_HANDLE_W)
+	handle:EnableMouse(true)
+	handle:SetFrameLevel(edit:GetFrameLevel() + 1)
+	local grip = handle:CreateTexture(nil, "OVERLAY")
+	grip:SetWidth(SPIN_GRIP_W)
+	grip:SetPoint("TOP", handle, "TOP", 0, 0)
+	grip:SetPoint("BOTTOM", handle, "BOTTOM", 0, 0)
+
+	local function gripColor(c) grip:SetTexture(c[1], c[2], c[3], c[4]) end
+	gripColor(SPIN_GRIP_IDLE)
+
+	paint = function()
+		local lo, hi, step = bounds()
+		local span = f.trackSpan or 0
+		local p = (hi > lo) and (value - lo) / (hi - lo) or 0
+		if p < 0 then p = 0 elseif p > 1 then p = 1 end
+		local w = p * span
+		if w < 1 then fill:Hide() else fill:SetWidth(w); fill:Show() end
+		handle:ClearAllPoints()
+		handle:SetPoint("TOP", track, "TOPLEFT", SPIN_INSET + w, -SPIN_INSET)
+		handle:SetPoint("BOTTOM", track, "BOTTOMLEFT", SPIN_INSET + w, SPIN_INSET)
+
+		label:SetText(spec.label or "")
+		-- Never while the box has focus: that would overwrite what is being typed.
+		if not focused then
+			edit:SetText(spec.fmt and spec.fmt(value) or formatNumber(value, spec.decimals or 2))
+		end
+
+		-- Half a step of slack, so a value sitting exactly on an end still reads
+		-- as "no further this way" through float error.
+		local slack = (step or 1) * 0.5
+		if value - lo < slack then
+			left:Disable(); left.icon:SetVertexColor(0.35, 0.35, 0.35)
+		else
+			left:Enable(); left.icon:SetVertexColor(1, 1, 1)
+		end
+		if hi - value < slack then
+			right:Disable(); right.icon:SetVertexColor(0.35, 0.35, 0.35)
+		else
+			right:Enable(); right.icon:SetVertexColor(1, 1, 1)
+		end
+	end
+
+	-- onChange fires only on a real move, which is what lets Enter commit through
+	-- the focus-lost path as well without reporting the same edit twice.
+	setValue = function(v, fire)
+		v = snap(v)
+		local changed = (v ~= value)
+		value = v
+		paint()
+		if fire and changed and spec.onChange then spec.onChange(value) end
+	end
+
+	local function commitText()
+		if tonumber(edit:GetText()) == nil then paint(); return end
+		setValue(edit:GetText(), true)
+	end
+
+	edit:SetScript("OnEditFocusGained", function() LibWidgets.CloseAllMenus(); focused = true end)
+	-- Committing on focus lost as well as on Enter is what makes clicking away
+	-- keep a typed number instead of silently discarding it; Escape is the way
+	-- out. Enter still commits directly rather than leaning on ClearFocus to
+	-- raise OnEditFocusLost, and the pair is harmless because the second commit
+	-- lands on the value the first one just set.
+	edit:SetScript("OnEnterPressed", function()
+		focused = false
+		commitText()
+		this:ClearFocus()
+	end)
+	edit:SetScript("OnEscapePressed", function() escaping = true; this:ClearFocus() end)
+	edit:SetScript("OnEditFocusLost", function()
+		focused = false
+		if escaping then escaping = false; paint() else commitText() end
+	end)
+
+	-- The button is not necessarily still under the cursor when it is released,
+	-- so the drag ends on the button's own state rather than on an OnMouseUp
+	-- that may land somewhere else entirely.
+	local function dragUpdate()
+		if not IsMouseButtonDown("LeftButton") then
+			dragging = false
+			handle:SetScript("OnUpdate", nil)
+			gripColor(SPIN_GRIP_IDLE)
+			return
+		end
+		local lo, hi = bounds()
+		local span = f.trackSpan or 0
+		if span <= 0 then return end
+		local x = GetCursorPosition() / handle:GetEffectiveScale()
+		setValue(dragStartValue + ((x - dragStartX) / span) * (hi - lo), true)
+	end
+
+	handle:SetScript("OnMouseDown", function()
+		if arg1 and arg1 ~= "LeftButton" then return end
+		LibWidgets.CloseAllMenus()
+		edit:ClearFocus()
+		dragging = true
+		dragStartX = GetCursorPosition() / handle:GetEffectiveScale()
+		dragStartValue = value
+		gripColor(SPIN_GRIP_ACTIVE)
+		this:SetScript("OnUpdate", dragUpdate)
+	end)
+	handle:SetScript("OnEnter", function() gripColor(SPIN_GRIP_ACTIVE) end)
+	handle:SetScript("OnLeave", function() if not dragging then gripColor(SPIN_GRIP_IDLE) end end)
+
+	-- Sizes the whole control: the two step buttons take a fixed bite and the
+	-- track keeps the rest, so a caller budgets one number for the row. The
+	-- track's usable span is carried rather than read back -- this client
+	-- answers GetWidth with 0 for a frame that has never been shown.
+	function f.setWidth(w)
+		f:SetWidth(w)
+		local tw = w - 2 * (SPIN_BTN_W + SPIN_GAP)
+		if tw < 24 then tw = 24 end
+		track:SetWidth(tw)
+		f.trackSpan = tw - 2 * SPIN_INSET
+		paint()
+	end
+
+	-- Resyncs from external state without echoing through onChange. Falls back to
+	-- min on a non-number for the same reason NewSlider's setValue does: a field
+	-- can predate the value a caller reads for it, and one stale entry must not
+	-- take down the panel it sits on.
+	function f.setValue(v)
+		setValue(tonumber(v) or (spec.min or 0), false)
+	end
+	function f.getValue() return value end
+	f.stepDown, f.stepUp = left, right
+
+	f.setWidth(spec.width or 150)
+	if spec.get then f.setValue(spec.get()) end
+	return f
 end
 
 -- The top-level frame in `frame`'s parent chain (the one parented straight to

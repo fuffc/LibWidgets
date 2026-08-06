@@ -3,7 +3,7 @@
 ## What this is
 
 A small, addon-agnostic UI widget library for 1.12 WoW addons. It currently
-houses eleven widgets:
+houses twelve widgets:
 
 - `NewButton` — a flat, tooltip-backdrop-styled action button (text label,
   press-nudge feedback).
@@ -43,6 +43,14 @@ houses eleven widgets:
   value instead of the template's Low/High end labels, with a `.setValue(v)`
   method that resyncs the widget from external state without echoing back
   through `onChange`.
+- `NewSpinBox` — the same job as `NewSlider` for a value that has to be set
+  exactly: a caption above a filled track, the number typeable inside the track
+  as a centred edit box, and a step button just outside each end. Drag for
+  coarse, type for exact, step for fine. Typing commits on Enter *and* on focus
+  loss (clicking away keeps the number rather than discarding it), reverts on
+  Escape, and snaps/clamps to min/max/step. The two step buttons are the one
+  `up` arrow under `textures\` given a quarter turn each way via `SetTexCoord`,
+  so a consumer ships one arrow file rather than four.
 - `NewDropButton` — a button showing the current value that drops a popup list
   of options to change it (no cycling), for small fixed or dynamic value sets
   (an anchor point, a mode, a profile name). With `spec.textureDir` it draws a
@@ -106,7 +114,7 @@ what counts as an error) stays in the consumer.
 They are pure `string -> string` and touch no frame, which makes them the one
 part of this library testable off the client.
 
-None of the ten have any knowledge of a particular addon's data model —
+None of them have any knowledge of a particular addon's data model —
 every caller-specific behavior (what a button does, a slider's range/label,
 a text box's commit, a drop button's values, a list editor's backing
 array/reorder/paint) comes through the `spec` table (or plain args, for the
