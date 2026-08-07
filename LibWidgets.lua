@@ -2387,8 +2387,9 @@ end
 -- ---------------------------------------------------------------------------
 -- Lua source tokenizer + syntax colouring
 --
--- Ported from "For All Indents And Purposes" by Kristofer Karlsson
--- (kristofer.karlsson@gmail.com).
+-- Ported from "For All Indents And Purposes", Copyright (c) 2007 Kristofer
+-- Karlsson <kristofer.karlsson@gmail.com>, under the MIT licence reproduced in
+-- this library's LICENSE.
 --
 -- Pure string -> string: no frames, no per-edit-box state, so a consumer can
 -- colour a buffer with no widget involved (and so this half is testable off

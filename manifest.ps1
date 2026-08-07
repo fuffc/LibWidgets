@@ -24,12 +24,17 @@ function Get-LibWidgetsManifest {
 
     $luaFiles = @("LibWidgets.lua")
 
+    # LICENSE ships with the code, not because packaging is tidy but because the
+    # MIT grant covering this library -- and the one covering the tokenizer
+    # ported into it -- both require the notice to travel with every copy.
+    $licenseFiles = @("LICENSE")
+
     $textureFiles = @()
     $texDir = Join-Path $LibRoot "textures"
     if (Test-Path $texDir) {
         $textureFiles = Get-ChildItem -Path $texDir -File | ForEach-Object { Join-Path "textures" $_.Name }
     }
 
-    $relPaths = $luaFiles + $textureFiles
+    $relPaths = $luaFiles + $licenseFiles + $textureFiles
     return $relPaths | ForEach-Object { Join-Path $LibRoot $_ }
 }
