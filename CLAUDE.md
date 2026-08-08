@@ -84,7 +84,10 @@ houses twelve widgets:
   editor. Colouring happens **on blur, never while typing**: the plain code
   lives in a private upvalue and the edit box holds the display form, so a
   focused box contains exactly what the user typed and the caret can never
-  land inside a colour escape. Carries its own red error line under the box
+  land inside a colour escape. The coloured form is padded with blank lines the
+  same way the live path pads, so an unterminated string's runaway colour ends
+  on those rather than on the user's last line of code. Carries its
+  own red error line under the box
   (driven by a caller-supplied `validate`) and, when given `spec.default`, a
   two-click-confirm Reset button above it. The button is always built and
   merely hidden without a default, so a pooling consumer can rebind one
@@ -164,6 +167,28 @@ too; FearWardHelper's config panel does both (`FearWardHelper.lua`'s
 hiding a parent frame only suppresses a child's *visibility*, not its own
 `Shown` flag, so a menu left open when its host panel closes would otherwise
 pop back up still expanded the next time the panel reopens.
+
+### Edit focus rides the same signal
+
+The missing focus-lost event cuts the other way too: an `EditBox` *does* get
+told it lost focus, but only when something takes focus away from it, and
+clicking a button or a checkbox is not that. A box the user clicked away from
+therefore keeps focus indefinitely — and with it anything it only commits on
+blur, which for `NewCodeEditBox` is the commit, the syntax colouring and the
+error line all at once.
+
+So `CloseAllMenus()` also drops the focused edit box, tracked in a
+`focusedEdit` upvalue that every `OnEditFocusGained` in the file claims through
+the private `takeFocus`. One event, one call site, and every consumer that
+already wired a panel's `OnMouseDown`/`OnHide` gets the focus half for free.
+`LibWidgets.ClearFocus()` is the focus half alone, for a caller that must not
+disturb an open menu.
+
+`takeFocus` drops the recorded box *before* closing the menus rather than
+clearing it: the engine has already taken focus off whoever held it, and
+clearing a recorded box that is the one now gaining focus fires its own
+focus-lost handler underneath it. A pooled inline rename box reopened on a
+second row closes itself that way.
 
 ## Where a `NewDropButton` popup is hosted
 
