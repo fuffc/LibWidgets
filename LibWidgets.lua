@@ -206,6 +206,9 @@
 --                    e.g. profile names)
 --   labels        -- value -> display label; optional (defaults to the raw value)
 --   tips          -- value -> tooltip line; optional
+--   previews      -- value -> true; adds a per-row preview button
+--   previewTexture -- texture path for the preview button (optional)
+--   onPreview(v)  -- called by a row preview without selecting or closing
 --   swatches      -- optional: value -> texture path. Turns the picker into a
 --                    preview picker: the button's face and every menu entry draw
 --                    that texture as a filled green bar behind the label, so a
@@ -323,7 +326,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 17
+local MAJOR, MINOR = "LibWidgets-1.0", 19
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
@@ -1329,12 +1332,15 @@ function LibWidgets.NewScrollFrame(parent, spec)
 	return frame
 end
 
--- A value-picker drop button; see the header comment for spec.
+-- A value-picker drop button; see the header comment for spec. `previews` marks
+-- rows with a side button that invokes `onPreview` without selecting or closing.
 function LibWidgets.NewDropButton(parent, spec)
 	local values   = spec.values
 	local labels   = spec.labels or {}
 	local tips     = spec.tips
 	local swatches = spec.swatches
+	local previews = spec.previews
+	local previewTexture = spec.previewTexture
 	local width    = spec.width or 92
 	local itemH    = spec.itemHeight or (swatches and 20 or 14)
 
@@ -1443,6 +1449,20 @@ function LibWidgets.NewDropButton(parent, spec)
 		local ifs = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		ifs:SetPoint("LEFT", item, "LEFT", 2, 0)
 		item.label = ifs
+		if previews then
+			local preview = CreateFrame("Button", nil, item)
+			preview:SetWidth(16); preview:SetHeight(itemH - 2)
+			preview:SetPoint("RIGHT", item, "RIGHT", -1, 0)
+			local previewIcon = preview:CreateTexture(nil, "ARTWORK")
+			previewIcon:SetAllPoints(preview)
+			previewIcon:SetTexture(previewTexture or "Interface\\ChatFrame\\UI-ChatIcon-Chat")
+			previewIcon:SetVertexColor(1, 0.82, 0.15, 1)
+			preview.icon = previewIcon
+			preview:SetScript("OnClick", function()
+				if spec.onPreview and this.value then spec.onPreview(this.value) end
+			end)
+			item.preview = preview
+		end
 		local hl = item:CreateTexture(nil, "HIGHLIGHT")
 		hl:SetAllPoints(item); hl:SetTexture(0.3, 0.3, 0.8, 0.5)
 		item:SetScript("OnClick", function()
@@ -1468,6 +1488,10 @@ function LibWidgets.NewDropButton(parent, spec)
 			local item = menuItem(i)
 			item.value = vals[i]
 			item.label:SetText(labels[vals[i]] or vals[i])
+			if item.preview then
+				item.preview.value = vals[i]
+				if previews[vals[i]] then item.preview:Show() else item.preview:Hide() end
+			end
 			if item.swatch then
 				local path = swatches[vals[i]]
 				if path then
