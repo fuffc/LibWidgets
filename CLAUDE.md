@@ -3,10 +3,25 @@
 ## What this is
 
 A small, addon-agnostic UI widget library for 1.12 WoW addons. It currently
-houses twelve widgets:
+houses fourteen widgets:
 
 - `NewButton` — a flat, tooltip-backdrop-styled action button (text label,
   press-nudge feedback).
+- `NewTabButton` — a `NewButton` plus the lit "selected" look and a `value`
+  identifying it. A selected tab ignores hover so the active one stays lit.
+- `NewTabStrip` — a row of `NewTabButton`s that lays itself out. Each tab is
+  sized to **its own label**, not to an equal share of the strip, and the row
+  wraps onto as many lines as it needs; `onReflow(rows, height)` tells the
+  consumer to re-anchor whatever sits below. The layout is AceGUI
+  `TabGroup:BuildTabs` — measure, greedy-wrap, pull a lone last tab up beside
+  its neighbours, stretch a row to fill — with one deliberate change: the
+  fill test is applied **per row** rather than only to a lone row, so a short
+  second row keeps its natural widths instead of ballooning two tabs across
+  the whole strip. Equal shares are the obvious alternative and they fail as
+  soon as a strip grows: every tab shrinks to the narrowest one's needs, and a
+  label with no width set does not clip on this client — it overflows into its
+  neighbours. `select(nil)` deselects every tab, for a panel showing something
+  that belongs to no tab.
 - `NewIconButton` — the same button styling with a texture face instead of a
   label; the list editor's own reorder/delete buttons are these, published so a
   consumer can build the same control outside a list (a section header's
