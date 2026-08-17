@@ -280,6 +280,21 @@ this.
   `rowHeight` — the caller supplies its own addon's absolute textures path
   like any other caller-specific value, rather than this file assuming or
   hardcoding one.
+
+  **A widget's own *default* art therefore comes from the client, not from
+  `textures\`.** A default cannot require a `spec` field, so it cannot address a
+  shipped file. `ICON_DELETE` and `PREVIEW_TEXTURE` are both `Interface\Buttons\`
+  paths for that reason, and both out of the base `interface.MPQ` rather than a
+  patch archive, so they resolve on any client this library runs on.
+- **A refused `SetTexture` keeps the previous texture.** The client does not clear
+  a texture object when it rejects a path — whatever was there stays. So a bad
+  path never presents as a blank: on a fresh object it is invisible, and on a
+  **pooled** one it is the last caller's art, which reads as working until the two
+  are compared. Two rules follow. A texture path is not verified by looking at it
+  on screen — only by reading the result back
+  (`if t:GetTexture() ~= path then …`) or by finding it in an archive. And a
+  default must be a path known to exist, since a consumer has no way to discover
+  that this library's default silently drew nothing.
 - **No working multi-file XML manifest.** The common convention for a growable
   vendored library is a single `.xml` manifest a consumer's `.toc` references
   once, which pulls in every `.lua` file the library is made of via nested
